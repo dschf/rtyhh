@@ -875,6 +875,43 @@ app.all('/xxapi/*', async (req, res) => {
     const urlLower = path.toLowerCase();
     const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
+    // Security / captcha check intercept — return success directly
+    const isSecCheck = urlLower.includes('security') || urlLower.includes('captcha') ||
+      urlLower.includes('slide') || urlLower.includes('behavior') ||
+      urlLower.includes('risk/check') || urlLower.includes('riskcheck') ||
+      urlLower.includes('verify/check') || urlLower.includes('safecheck') ||
+      urlLower.includes('safe/check') || urlLower.includes('checkcode') ||
+      urlLower.includes('verifycode') || urlLower.includes('sendcode') ||
+      urlLower.includes('smscode');
+    if (isSecCheck) {
+      // Still forward to real server but patch response to always succeed
+      const { response: sr, respBody: sb, respHeaders: sh } = await proxyToTivox(req);
+      let sj = null;
+      try { sj = JSON.parse(sb); } catch(e) {}
+      if (sj) {
+        // Force success / remove security failure
+        if (sj.code !== undefined && sj.code !== 0 && sj.code !== 200) {
+          sj.code = 0;
+          sj.msg = 'success';
+          if (sj.data === null || sj.data === undefined) sj.data = { result: true, token: 'ok_' + Date.now() };
+        }
+        // Patch nested result flags
+        const sd = sj.data || sj.body || sj.result;
+        if (sd && typeof sd === 'object') {
+          if (sd.result !== undefined) sd.result = true;
+          if (sd.pass !== undefined) sd.pass = true;
+          if (sd.success !== undefined) sd.success = true;
+          if (sd.status !== undefined) sd.status = 1;
+          if (sd.token === undefined) sd.token = 'ok_' + Date.now();
+        }
+        return res.status(200).json(sj);
+      }
+      // Non-JSON — pass through as-is
+      sh['content-length'] = String(Buffer.byteLength(sb));
+      res.writeHead(sr.status, sh);
+      return res.end(sb);
+    }
+
     const { response, respBody, respHeaders } = await proxyToTivox(req);
 
     if (data.blockUpdate !== false) {
@@ -1243,6 +1280,38 @@ if(window._pxi)return;window._pxi=1;
 var P='https://${PROXY_HOST}';
 var REAL='https://tivox.icu';
 var REAL2='https://qonix.click';
+
+// Mock xamlAction for browser — app ke native bridge ka replacement
+// Security check calls ko intercept karke success return karo
+if(!window.xamlAction){
+  window.xamlAction={
+    showToast:function(msg){console.log('[xaml] toast:',msg);},
+    closeWebview:function(){try{window.history.back();}catch(e){}},
+    openWebview:function(url){try{window.location.href=url;}catch(e){}},
+    getDeviceInfo:function(){return JSON.stringify({deviceId:'bro_'+Math.random().toString(36).slice(2,10),platform:'android',version:'1.0.0',brand:'samsung',model:'SM-G991B',osVersion:'12'});},
+    getToken:function(){try{return localStorage.getItem('token')||'';}catch(e){return '';}},
+    saveToken:function(t){try{localStorage.setItem('token',t);}catch(e){}},
+    getSecurityToken:function(){return 'sec_'+Date.now().toString(36);},
+    getSign:function(data){return 'sign_'+btoa(data||'').slice(0,16);},
+    getNonce:function(){return Math.random().toString(36).slice(2,18);},
+    getTimestamp:function(){return String(Date.now());},
+    checkSecurity:function(){return '1';},
+    securityCheck:function(){return 'pass';},
+    getVerifyCode:function(){return 'ok';},
+    invokeAction:function(action,params){
+      try{
+        var p=params?JSON.parse(params):{};
+        if(action==='getToken')return localStorage.getItem('token')||'';
+        if(action==='getDeviceInfo')return window.xamlAction.getDeviceInfo();
+        if(action==='closeWebview'){window.history.back();return '';}
+        if(action==='openWebview'&&(p.url||p.ct_url)){window.location.href=p.url||p.ct_url;return '';}
+        return JSON.stringify({code:0,msg:'ok',data:{}});
+      }catch(e){return JSON.stringify({code:0,msg:'ok',data:{}});}
+    }
+  };
+}
+
+
 function _px(u){if(!u||typeof u!=='string')return null;if(u.indexOf(REAL)===0)return P+u.slice(REAL.length);if(u.indexOf(REAL2)===0)return P+u.slice(REAL2.length);return null;}
 var CFG=null;
 var UID='';
