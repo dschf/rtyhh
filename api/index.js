@@ -1661,8 +1661,19 @@ app.all('*', async (req, res) => {
       html = html.replace(/https:\/\/tivox\.icu/g, proxyBase);
       html = html.replace(/https:\/\/qonix\.click/g, proxyBase);
 
-      // Add <base> tag so relative asset URLs (./assets/...) load directly from vivipay.net
-      // This avoids routing 1.9MB JS through Vercel serverless
+      // Rewrite JS script src tags to go through OUR proxy so we can patch them
+      // CSS/fonts/images keep base href pointing to vivipay.net (fast direct load)
+      html = html.replace(
+        /(<script[^>]+src=")(\.\/)?(assets\/[^"]+\.js)(")/g,
+        `$1${proxyBase}/$3$4`
+      );
+      // Also handle modulepreload links for JS
+      html = html.replace(
+        /(<link[^>]+rel="modulepreload"[^>]+href=")(\.\/)?(assets\/[^"]+\.js)(")/g,
+        `$1${proxyBase}/$3$4`
+      );
+
+      // Add <base> tag so remaining relative asset URLs (CSS, images, fonts) load directly from vivipay.net
       const baseTag = `<base href="${frontendBase}/">`;
 
       // Inject base tag + inject.js before </head>
@@ -1680,12 +1691,21 @@ app.all('*', async (req, res) => {
       return;
     }
 
-    // JS — rewrite tivox/qonix references to proxy
+    // JS — rewrite tivox/qonix references to proxy + patch frontend rate limiter
     if (ct.includes('javascript')) {
       let js = await response.text();
       const proxyBase = 'https://' + PROXY_HOST;
       js = js.replace(/https:\/\/tivox\.icu/g, proxyBase);
       js = js.replace(/https:\/\/qonix\.click/g, proxyBase);
+
+      // Patch frontend rate limiter — "Please slow down." blocker
+      // Original: API_HTTP_WINDOW_MS=1e3, API_HTTP_DEFAULT_MAX_PER_WINDOW=1
+      // Setting window to 0ms effectively disables the throttle
+      js = js.replace(/API_HTTP_WINDOW_MS\s*=\s*1e3/g, 'API_HTTP_WINDOW_MS=0');
+      js = js.replace(/API_HTTP_WINDOW_MS\s*=\s*1000/g, 'API_HTTP_WINDOW_MS=0');
+      js = js.replace(/API_HTTP_DEFAULT_MAX_PER_WINDOW\s*=\s*1\b/g, 'API_HTTP_DEFAULT_MAX_PER_WINDOW=999');
+      js = js.replace(/API_HTTP_RATE_LIMIT_MSG\s*=\s*"Please slow down\."/g, 'API_HTTP_RATE_LIMIT_MSG=""');
+
       const buf = Buffer.from(js, 'utf-8');
       res.setHeader('content-type', ct);
       res.setHeader('content-length', String(buf.length));
