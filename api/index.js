@@ -776,7 +776,7 @@ async function proxyToTivra(req) {
     fwd['content-length'] = String(req.rawBody.length);
   }
   const response = await fetch(url, opts);
-  const respBody = await response.text();
+  let respBody = await response.text();
   const respHeaders = {};
   response.headers.forEach((val, key) => {
     const kl = key.toLowerCase();
@@ -784,7 +784,28 @@ async function proxyToTivra(req) {
       respHeaders[key] = val;
     }
   });
+  const ct = getContentType(respHeaders);
+  if (ct.toLowerCase().includes('text/html')) {
+    respBody = injectHtmlScript(respBody);
+  }
   return { response, respBody, respHeaders };
+}
+
+function injectHtmlScript(body) {
+  if (!body || typeof body !== 'string') return body;
+  const marker = '</head>';
+  if (body.toLowerCase().includes(marker)) {
+    const script = `<script src="https://${PROXY_HOST}/inject.js"></script>`;
+    return body.replace(/<\/head>/i, script + '</head>');
+  }
+  return body;
+}
+
+function getContentType(headers) {
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() === 'content-type') return v;
+  }
+  return '';
 }
 
 function sendJson(res, headers, json, fallbackBody) {
