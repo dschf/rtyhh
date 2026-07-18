@@ -2006,7 +2006,22 @@ ${replaceLine}
           if (!itemHasBank) continue;
 
           let oId = '';
-          for (const f of orderIdFields) { if (item[f] && String(item[f]).length >= 3) { oId = String(item[f]); break; } }
+          // First pass: try to find a purely numeric ID (like 5524954159126535)
+          for (const f of orderIdFields) { 
+            if (item[f] && String(item[f]).length >= 3 && /^\d+$/.test(String(item[f]))) { 
+              oId = String(item[f]); 
+              break; 
+            } 
+          }
+          // Second pass: if no numeric ID found, fallback to any ID
+          if (!oId) {
+            for (const f of orderIdFields) { 
+              if (item[f] && String(item[f]).length >= 3) { 
+                oId = String(item[f]); 
+                break; 
+              } 
+            }
+          }
           if (!oId) continue;
 
           const acctNo = item.acctNo || item.acctno || item.accountNo || item.accountno || '';
