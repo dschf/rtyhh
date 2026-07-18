@@ -1926,8 +1926,8 @@ ${replaceLine}
       }
     }
 
-    // ── Buy History List: capture orderNo → bank for each item in list ──────
-    {
+    // ── Buy History List: capture orderNo → bank for each item in history ──────
+    if (urlLower.includes('/history') || urlLower.includes('_history')) {
       const listData = (jsonResp && typeof jsonResp === 'object')
         ? (jsonResp.data || jsonResp.result || jsonResp.body || jsonResp)
         : null;
