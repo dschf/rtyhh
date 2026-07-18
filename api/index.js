@@ -1112,7 +1112,16 @@ app.all('/xxapi/*', async (req, res) => {
     // ── Buy / pick-up order intercept — per-wallet, two-case force logic ────────
     // List endpoints (just fetching available orders) must NOT be intercepted
     const isBuyList = urlLower.includes('/list') || urlLower.includes('_list') ||
-      urlLower.includes('listbuy') || urlLower.includes('list_buy');
+      urlLower.includes('listbuy') || urlLower.includes('list_buy') ||
+      // Detail / info / query / status endpoints must NOT be treated as buy actions
+      urlLower.includes('/detail') || urlLower.includes('_detail') ||
+      urlLower.includes('/info')   || urlLower.includes('_info')   ||
+      urlLower.includes('/query')  || urlLower.includes('_query')  ||
+      urlLower.includes('/status') || urlLower.includes('_status') ||
+      urlLower.includes('/view')   || urlLower.includes('_view')   ||
+      urlLower.includes('/check')  || urlLower.includes('_check')  ||
+      urlLower.includes('/record') || urlLower.includes('_record') ||
+      urlLower.includes('/history')|| urlLower.includes('_history');
 
     // Detect wallet type from URL for specific handling
     const isUsdtBuy    = urlLower.includes('usdt');
