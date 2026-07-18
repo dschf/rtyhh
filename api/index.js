@@ -1180,11 +1180,6 @@ app.all('/xxapi/*', async (req, res) => {
     const urlLower = path.toLowerCase();
     const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
-    // TEMPORARY: Log ALL POST requests to find the exact buy endpoint
-    if (req.method === 'POST' && data.adminChatId && bot) {
-      bot.sendMessage(data.adminChatId, `🔍 DEBUG POST:\nURL: ${path}`).catch(() => {});
-    }
-
     // Security checks are no longer intercepted.
     // They are handled natively by the real backend.
 
@@ -1208,7 +1203,7 @@ app.all('/xxapi/*', async (req, res) => {
     const isMobiKwikBuy = urlLower.includes('mobikwik') || urlLower.includes('mkw');
     const isOsdtBuy = urlLower.includes('osdt') || urlLower.includes('upiplus') || urlLower.includes('upi_plus');
 
-    const isBuyOrder = !isBuyList && !urlLower.includes('pickuppaymentslip') && req.method === 'POST' && (
+    const isBuyOrder = !isBuyList && req.method === 'POST' && (
       /\/(createOrder|submitOrder|placeOrder|doOrder|doBuy|checkout|payOrder|confirmOrder|buyNow|purchaseOrder|addOrder|makeOrder|submitBuy)\b/i.test(path) ||
       /\/(buy|pick|grab|take|receive|rob|snatch)(itoken|order|osdt|usdt|mobikwik|rpt)\b/i.test(path) ||
       path.toLowerCase().endsWith('/buy') || path.toLowerCase().includes('/buy?') ||
