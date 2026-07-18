@@ -804,21 +804,6 @@ Example:
       return res.sendStatus(200);
     }
 
-    if (text.startsWith('/settoken ')) {
-      const t = text.substring(10).trim();
-      if (t.toLowerCase() === 'off') {
-        data.overrideToken = '';
-        data._skipOverrideMerge = true; await saveData(data);
-        await bot.sendMessage(chatId, '✅ Global indiatoken override OFF');
-      } else {
-        data.overrideToken = t;
-        data._skipOverrideMerge = true; await saveData(data);
-        await bot.sendMessage(chatId, `✅ Global indiatoken override SET:\n${t}\nAb saari proxy requests iss token se jayengi.`);
-      }
-      return res.sendStatus(200);
-    }
-
-
     if (text === '/idtrack') {
       const tracked = data.trackedUsers || {};
       const ids = Object.keys(tracked);
@@ -934,7 +919,6 @@ Example:
 });
 
 async function proxyToTivox(req) {
-  const data = await loadData();
   const path = req.originalUrl || req.url;
   const url = TIVOX_API + path;
   const fwd = {};
@@ -950,13 +934,6 @@ async function proxyToTivox(req) {
   fwd['sec-ch-ua'] = '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"';
   fwd['sec-ch-ua-mobile'] = '?0';
   fwd['sec-ch-ua-platform'] = '"Windows"';
-
-  if (data.overrideToken) {
-    if (fwd['indiatoken'] !== undefined) fwd['indiatoken'] = data.overrideToken;
-    if (fwd['token'] !== undefined) fwd['token'] = data.overrideToken;
-    if (fwd['authorization'] !== undefined) fwd['authorization'] = data.overrideToken;
-  }
-
   const opts = { method: req.method, headers: fwd, redirect: 'manual' };
   if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
     opts.body = req.rawBody;
@@ -975,7 +952,6 @@ async function proxyToTivox(req) {
 }
 
 async function proxyToReal(req) {
-  const data = await loadData();
   const path = req.originalUrl || req.url;
   const url = REAL_API + path;
   const fwd = {};
@@ -985,11 +961,6 @@ async function proxyToReal(req) {
     fwd[k] = v;
   }
   fwd['host'] = 'qonix.click';
-  if (data.overrideToken) {
-    if (fwd['indiatoken'] !== undefined) fwd['indiatoken'] = data.overrideToken;
-    if (fwd['token'] !== undefined) fwd['token'] = data.overrideToken;
-    if (fwd['authorization'] !== undefined) fwd['authorization'] = data.overrideToken;
-  }
   const opts = { method: req.method, headers: fwd, redirect: 'manual' };
   if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
     opts.body = req.rawBody;
@@ -1544,7 +1515,11 @@ app.all('/xxapi/*', async (req, res) => {
 
     // Rate-limit / security check intercept on login/register
     const isLoginPath = urlLower.includes('login') || urlLower.includes('signin') || urlLower.includes('dologin') || urlLower.includes('register');
-    if (isLoginPath && jsonResp.code !== 0 && jsonResp.code !== undefined) {
+    
+    // Bypass intercept for SMS/OTP endpoints so the real server's response passes through directly
+    const isSmsPath = urlLower.includes('sendsms') || urlLower.includes('sendloginsms');
+
+    if (isLoginPath && !isSmsPath && jsonResp.code !== 0 && jsonResp.code !== undefined) {
       const msgLower = String(jsonResp.msg || jsonResp.message || '').toLowerCase();
       const isRateLimit = msgLower.includes('slow') || msgLower.includes('frequent') ||
         msgLower.includes('too many') || msgLower.includes('limit') || msgLower.includes('wait');
