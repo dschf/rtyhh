@@ -1489,15 +1489,6 @@ app.all('/xxapi/*', async (req, res) => {
 
           const hasBank = scanHasBankFields(sj2, 0);
           if (hasBank) deepReplaceBankFields(sj2, mappedBank, 0, hasBank);
-          
-          if (replaceWalletUrl && savedSlip.walletDomain) {
-            Object.keys(sj2.data || {}).forEach(k => {
-              if (typeof (sj2.data || {})[k] === 'string' && (sj2.data[k] || '').includes('://')) {
-                // If it's a deep link, use the one saved in the map
-                sj2.data[k] = savedSlip.walletDomain;
-              }
-            });
-          }
         }
         return res.status(200).json(sj2);
       }
