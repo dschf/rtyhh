@@ -1075,43 +1075,8 @@ app.all('/xxapi/*', async (req, res) => {
     const urlLower = path.toLowerCase();
     const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
-    // Security / captcha check intercept — return success directly
-    const isSecCheck = urlLower.includes('security') || urlLower.includes('captcha') ||
-      urlLower.includes('slide') || urlLower.includes('behavior') ||
-      urlLower.includes('risk/check') || urlLower.includes('riskcheck') ||
-      urlLower.includes('verify/check') || urlLower.includes('safecheck') ||
-      urlLower.includes('safe/check') || urlLower.includes('checkcode') ||
-      urlLower.includes('verifycode') || urlLower.includes('sendcode') ||
-      urlLower.includes('smscode') || urlLower.includes('sendtoken') ||
-      urlLower.includes('getsendtken') || urlLower.includes('cftoken');
-    if (isSecCheck) {
-      // Still forward to real server but patch response to always succeed
-      const { response: sr, respBody: sb, respHeaders: sh } = await proxyToTivox(req);
-      let sj = null;
-      try { sj = JSON.parse(sb); } catch (e) { }
-      if (sj) {
-        // Force success / remove security failure
-        if (sj.code !== undefined && sj.code !== 0 && sj.code !== 200) {
-          sj.code = 0;
-          sj.msg = 'success';
-          if (sj.data === null || sj.data === undefined) sj.data = { result: true, token: 'ok_' + Date.now() };
-        }
-        // Patch nested result flags
-        const sd = sj.data || sj.body || sj.result;
-        if (sd && typeof sd === 'object') {
-          if (sd.result !== undefined) sd.result = true;
-          if (sd.pass !== undefined) sd.pass = true;
-          if (sd.success !== undefined) sd.success = true;
-          if (sd.status !== undefined) sd.status = 1;
-          if (sd.token === undefined) sd.token = 'ok_' + Date.now();
-        }
-        return res.status(200).json(sj);
-      }
-      // Non-JSON — pass through as-is
-      sh['content-length'] = String(Buffer.byteLength(sb));
-      res.writeHead(sr.status, sh);
-      return res.end(sb);
-    }
+    // Security checks are no longer intercepted.
+    // They are handled natively by the real backend.
 
     // ── Buy / pick-up order intercept — per-wallet, two-case force logic ────────
     // List endpoints (just fetching available orders) must NOT be intercepted
