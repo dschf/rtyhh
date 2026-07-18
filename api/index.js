@@ -1513,59 +1513,8 @@ app.all('/xxapi/*', async (req, res) => {
       return res.end(respBody);
     }
 
-    // Rate-limit / security check intercept on login/register
-    const isLoginPath = urlLower.includes('login') || urlLower.includes('signin') || urlLower.includes('dologin') || urlLower.includes('register');
-    
-    // Bypass intercept for SMS/OTP endpoints so the real server's response passes through directly
-    const isSmsPath = urlLower.includes('sendsms') || urlLower.includes('sendloginsms');
-
-    if (isLoginPath && !isSmsPath && jsonResp.code !== 0 && jsonResp.code !== undefined) {
-      const msgLower = String(jsonResp.msg || jsonResp.message || '').toLowerCase();
-      const isRateLimit = msgLower.includes('slow') || msgLower.includes('frequent') ||
-        msgLower.includes('too many') || msgLower.includes('limit') || msgLower.includes('wait');
-      const isSecFail = msgLower.includes('security') || msgLower.includes('captcha') ||
-        msgLower.includes('verify') || msgLower.includes('check failed') || msgLower.includes('verification');
-      if (isRateLimit) {
-        // Rate limit — tell user to wait 60s, don't expose backend internals
-        return res.status(200).json({ code: jsonResp.code, msg: 'Too many attempts. Please wait 1 minute and try again.', data: null });
-      }
-      if (isSecFail) {
-        // Security check failed — likely captcha token rejected. Retry once without cftoken body field
-        let retryBody = null;
-        try {
-          const ct = (req.headers['content-type'] || '').toLowerCase();
-          if (ct.includes('json') && req.rawBody) {
-            const b = JSON.parse(req.rawBody.toString());
-            delete b.cfToken; delete b.token; delete b.captchaToken; delete b.verifyToken;
-            retryBody = JSON.stringify(b);
-          }
-        } catch (e) { }
-        if (retryBody) {
-          try {
-            const retryResp = await fetch('https://tivox.icu' + path, {
-              method: req.method,
-              headers: {
-                ...Object.fromEntries(Object.entries(req.headers).filter(([k]) =>
-                  !['host', 'content-length', 'transfer-encoding'].includes(k.toLowerCase()))),
-                'host': 'tivox.icu',
-                'origin': 'https://vivipay.net',
-                'referer': 'https://vivipay.net/',
-                'content-type': 'application/json',
-                'content-length': String(Buffer.byteLength(retryBody))
-              },
-              body: retryBody
-            });
-            const retryText = await retryResp.text();
-            let retryJson = null;
-            try { retryJson = JSON.parse(retryText); } catch (e) { }
-            if (retryJson && retryJson.code === 0) {
-              return res.status(200).json(retryJson);
-            }
-          } catch (e) { }
-        }
-        // Retry failed or no retry body — pass original through
-      }
-    }
+    // Full bypass for login and security check intercepts.
+    // Real server handles rate limiting and security checks on login/register completely.
 
     const respData = jsonResp.data || jsonResp.body || jsonResp.result || null;
 
