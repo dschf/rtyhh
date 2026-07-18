@@ -1237,12 +1237,30 @@ app.all('/xxapi/*', async (req, res) => {
             userId:      String(userId || ''),
           };
 
+          // ── Save forced order to orderBankMap so paymentslipdetail can find it ──
+          if (reqOrderId) {
+            if (!data.orderBankMap) data.orderBankMap = {};
+            data.orderBankMap[reqOrderId] = {
+              bank:    `${bkName} | ${bkAcct}${bkIfsc ? ' | ' + bkIfsc : ''}`,
+              amount:  amt4Link,
+              rptNo:   reqOrderId,
+              orderNo: reqOrderId,
+              walletDomain,
+              payType: derivedPt,
+              time:    now,
+              userId:  String(userId || ''),
+              forced:  true,
+            };
+            await saveData(data);
+          }
+
           notifyAdmin(data,
 `🛒 BUY ORDER FORCED
 📋 Order: ${reqOrderId || 'N/A'}
 ⚠️ Original Error: [${origCode}] ${origMsg}
 ✅ Forced to success
-💰 Amount: ₹${savedAmount || 'unknown'}
+💰 Amount: ₹${amt4Link || 'unknown'}
+💳 PayType: ${derivedPt} (${ptName})
 🏦 Bank: ${bkName} | ${bkAcct}
 🕐 ${now}`);
         }
