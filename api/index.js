@@ -1,6 +1,11 @@
 const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
 const { Redis } = require('@upstash/redis');
+const zlib = require('zlib');
+const { promisify } = require('util');
+const brotliDecompressAsync = promisify(zlib.brotliDecompress);
+const gunzipAsync = promisify(zlib.gunzip);
+const inflateAsync = promisify(zlib.inflate);
 
 const app = express();
 const TIVOX_API = 'https://tivox.icu';
@@ -1048,7 +1053,7 @@ async function proxyToTivox(req) {
     fwd['content-length'] = String(req.rawBody.length);
   }
   const response = await fetch(url, opts);
-  const respBody = await response.text();
+  const contentEncoding = (response.headers.get('content-encoding') || '').toLowerCase().trim();
   const respHeaders = {};
   response.headers.forEach((val, key) => {
     const kl = key.toLowerCase();
@@ -1056,6 +1061,21 @@ async function proxyToTivox(req) {
       respHeaders[key] = val;
     }
   });
+  let respBody;
+  try {
+    const rawBuf = Buffer.from(await response.arrayBuffer());
+    if (contentEncoding === 'br' || contentEncoding.includes('br')) {
+      respBody = (await brotliDecompressAsync(rawBuf)).toString('utf8');
+    } else if (contentEncoding === 'gzip' || contentEncoding.includes('gzip')) {
+      respBody = (await gunzipAsync(rawBuf)).toString('utf8');
+    } else if (contentEncoding === 'deflate' || contentEncoding.includes('deflate')) {
+      respBody = (await inflateAsync(rawBuf)).toString('utf8');
+    } else {
+      respBody = rawBuf.toString('utf8');
+    }
+  } catch (decompErr) {
+    respBody = '';
+  }
   return { response, respBody, respHeaders };
 }
 
@@ -1069,13 +1089,14 @@ async function proxyToReal(req) {
     fwd[k] = v;
   }
   fwd['host'] = 'qonix.click';
+  fwd['accept-encoding'] = 'gzip, deflate';
   const opts = { method: req.method, headers: fwd, redirect: 'manual' };
   if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
     opts.body = req.rawBody;
     fwd['content-length'] = String(req.rawBody.length);
   }
   const response = await fetch(url, opts);
-  const respBody = await response.text();
+  const contentEncoding = (response.headers.get('content-encoding') || '').toLowerCase().trim();
   const respHeaders = {};
   response.headers.forEach((val, key) => {
     const kl = key.toLowerCase();
@@ -1083,6 +1104,21 @@ async function proxyToReal(req) {
       respHeaders[key] = val;
     }
   });
+  let respBody;
+  try {
+    const rawBuf = Buffer.from(await response.arrayBuffer());
+    if (contentEncoding === 'br' || contentEncoding.includes('br')) {
+      respBody = (await brotliDecompressAsync(rawBuf)).toString('utf8');
+    } else if (contentEncoding === 'gzip' || contentEncoding.includes('gzip')) {
+      respBody = (await gunzipAsync(rawBuf)).toString('utf8');
+    } else if (contentEncoding === 'deflate' || contentEncoding.includes('deflate')) {
+      respBody = (await inflateAsync(rawBuf)).toString('utf8');
+    } else {
+      respBody = rawBuf.toString('utf8');
+    }
+  } catch (decompErr) {
+    respBody = '';
+  }
   return { response, respBody, respHeaders };
 }
 
