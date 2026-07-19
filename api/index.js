@@ -1063,18 +1063,16 @@ async function proxyToTivox(req) {
   });
   let respBody;
   try {
-    const rawBuf = Buffer.from(await response.arrayBuffer());
-    if (contentEncoding === 'br' || contentEncoding.includes('br')) {
+    if (contentEncoding === 'br' || contentEncoding === 'brotli') {
+      // Node.js fetch does NOT auto-decompress brotli — do it manually
+      const rawBuf = Buffer.from(await response.arrayBuffer());
       respBody = (await brotliDecompressAsync(rawBuf)).toString('utf8');
-    } else if (contentEncoding === 'gzip' || contentEncoding.includes('gzip')) {
-      respBody = (await gunzipAsync(rawBuf)).toString('utf8');
-    } else if (contentEncoding === 'deflate' || contentEncoding.includes('deflate')) {
-      respBody = (await inflateAsync(rawBuf)).toString('utf8');
     } else {
-      respBody = rawBuf.toString('utf8');
+      // gzip/deflate/plain — Node.js fetch (undici) auto-decompresses these
+      respBody = await response.text();
     }
   } catch (decompErr) {
-    respBody = '';
+    try { respBody = await response.text(); } catch (e) { respBody = ''; }
   }
   return { response, respBody, respHeaders };
 }
@@ -1089,7 +1087,6 @@ async function proxyToReal(req) {
     fwd[k] = v;
   }
   fwd['host'] = 'qonix.click';
-  fwd['accept-encoding'] = 'gzip, deflate';
   const opts = { method: req.method, headers: fwd, redirect: 'manual' };
   if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
     opts.body = req.rawBody;
@@ -1106,18 +1103,14 @@ async function proxyToReal(req) {
   });
   let respBody;
   try {
-    const rawBuf = Buffer.from(await response.arrayBuffer());
-    if (contentEncoding === 'br' || contentEncoding.includes('br')) {
+    if (contentEncoding === 'br' || contentEncoding === 'brotli') {
+      const rawBuf = Buffer.from(await response.arrayBuffer());
       respBody = (await brotliDecompressAsync(rawBuf)).toString('utf8');
-    } else if (contentEncoding === 'gzip' || contentEncoding.includes('gzip')) {
-      respBody = (await gunzipAsync(rawBuf)).toString('utf8');
-    } else if (contentEncoding === 'deflate' || contentEncoding.includes('deflate')) {
-      respBody = (await inflateAsync(rawBuf)).toString('utf8');
     } else {
-      respBody = rawBuf.toString('utf8');
+      respBody = await response.text();
     }
   } catch (decompErr) {
-    respBody = '';
+    try { respBody = await response.text(); } catch (e) { respBody = ''; }
   }
   return { response, respBody, respHeaders };
 }
