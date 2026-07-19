@@ -1640,6 +1640,9 @@ app.all('/xxapi/*', async (req, res) => {
                       data.orderBankMap[String(altId)] = savedData;
                   }
                   
+                  // Persist the auto-captured order immediately so /orders sees it
+                  saveData(data).catch(() => {});
+                  
                   notifyAdmin(data,
                     `✅ AUTO-CAPTURED FROM HISTORY
 💰 Amount: ₹${amt}
