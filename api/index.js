@@ -1182,12 +1182,13 @@ app.all('/xxapi/*', async (req, res) => {
 
     // ── 100% CLEAN BYPASS FOR UPI & TEAM BUTTONS ──────────────────────────────
     if (urlLower.includes('/collectiontoollist') || urlLower.includes('/teaminfo')) {
-      const { response: r, respBody: rb, respHeaders: rh } = await proxyToTivox(req);
+      const { response: r, respBody: rb, respHeaders: rh } = await proxyToReal(req);
       rh['content-length'] = String(Buffer.byteLength(rb));
       res.writeHead(r.status, rh);
       return res.end(rb);
     }
     // ──────────────────────────────────────────────────────────────────────────
+
 
     // Security checks are no longer intercepted.
     // They are handled natively by the real backend.
