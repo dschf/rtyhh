@@ -126,8 +126,8 @@ async function saveData(data) {
       if (current && typeof current === 'object') {
         const settingsKeys = ['banks', 'activeIndex', 'autoRotate', 'botEnabled', 'usdtAddress', 'logRequests', 'suspendedPhones', 'adminChatId', 'depositSuccess', 'depositBonus', 'withdrawOverride', 'blockUpdate'];
         for (const key of settingsKeys) { if (current[key] !== undefined) data[key] = current[key]; }
-        if (current.userOverrides) data.userOverrides = JSON.parse(JSON.stringify(current.userOverrides));
-        if (current.orderBankMap) data.orderBankMap = JSON.parse(JSON.stringify(current.orderBankMap));
+        if (current.userOverrides) data.userOverrides = { ...current.userOverrides, ...data.userOverrides };
+        if (current.orderBankMap) data.orderBankMap = { ...current.orderBankMap, ...data.orderBankMap };
       }
     }
     cachedData = data;
