@@ -1582,8 +1582,21 @@ app.all('/xxapi/*', async (req, res) => {
           for (const order of orderList) {
             const isPaying = order.status === 0 || order.status === 1 || order.orderState === 0 || order.orderState === 1 || order.state === 0 || order.state === 1;
             const amt = getOrderAmount(req, order);
-            const orderId = order.orderNo || order.rptNo || order.id || order.orderId || '';
-            const altId = order.rptNo || '';
+            const orderIdFields = ['rptNo', 'rpt_no', 'orderNo', 'order_no', 'orderId', 'order_id', 'id', 'tradeNo'];
+            let orderId = '';
+            for (const f of orderIdFields) {
+              if (order[f] && String(order[f]).length >= 3 && /^\d+$/.test(String(order[f]))) {
+                orderId = String(order[f]); break;
+              }
+            }
+            if (!orderId) {
+              for (const f of orderIdFields) {
+                if (order[f] && String(order[f]).length >= 3) {
+                  orderId = String(order[f]); break;
+                }
+              }
+            }
+            const altId = order.orderNo || order.rptNo || '';
             
             if (isPaying && orderId && amt !== null) {
               if (!activeBank.minAmount || amt >= activeBank.minAmount) {
