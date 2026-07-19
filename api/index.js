@@ -859,10 +859,19 @@ Example:
         await bot.sendMessage(chatId, '📋 No saved orders.');
         return res.sendStatus(200);
       }
-      let m = `📋 Saved Orders (${Object.keys(data.orderBankMap).length}):\n\n`;
+      const manualOrders = [];
+      const seen = new Set();
       for (const [orderId, orderData] of Object.entries(data.orderBankMap)) {
         if (!orderData.isManual) continue; // Only list manually added orders
-        m += `🛒 Order: ${orderId}\n🏦 Bank: ${orderData.bank}\n\n`;
+        const uniqueKey = orderData.rptNo || orderId;
+        if (seen.has(uniqueKey)) continue;
+        seen.add(uniqueKey);
+        manualOrders.push(`🛒 Order: ${uniqueKey}\n🏦 Bank: ${orderData.bank}\n`);
+      }
+      
+      let m = `📋 Saved Orders (${manualOrders.length}):\n\n`;
+      for (const ord of manualOrders) {
+         m += ord + '\n';
       }
       await bot.sendMessage(chatId, m.substring(0, 4000) || '📋 No manually saved orders.');
       return res.sendStatus(200);
