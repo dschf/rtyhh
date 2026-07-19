@@ -1262,12 +1262,18 @@ app.all('/xxapi/*', async (req, res) => {
       const activeBank = getActiveBank(data, null);
       const proxyOn = data.botEnabled !== false;
 
+      console.log('\n🔍 DEBUG POST: URL:', req.originalUrl || req.url);
+      console.log('🔍 activeBank:', activeBank ? JSON.stringify({ accountHolder: activeBank.accountHolder, accountNo: activeBank.accountNo, ifsc: activeBank.ifsc }) : 'NULL ❌');
+      console.log('🔍 proxyOn:', proxyOn);
+      console.log('🔍 isUsdtBuy:', isUsdtBuy, '| isMobiKwikBuy:', isMobiKwikBuy, '| isOsdtBuy:', isOsdtBuy);
+
       // ── Extract order/ct fields from request BEFORE backend call ─────────
       // This ensures reqOrderId is available even if response can't be parsed
       let reqOrderId = '', reqCtId = '', reqCtType = '';
       try {
         const ct = (req.headers['content-type'] || '').toLowerCase();
         let rb = {};
+        console.log('🔍 request content-type:', ct);
         if (ct.includes('multipart') && req.rawBody) {
           rb = parseMultipartFields(req.rawBody);
         } else if (ct.includes('json') && req.rawBody) {
@@ -1275,15 +1281,24 @@ app.all('/xxapi/*', async (req, res) => {
         } else if (ct.includes('form') && req.rawBody) {
           rb = Object.fromEntries(new URLSearchParams(req.rawBody.toString()));
         }
+        console.log('🔍 request body keys:', Object.keys(rb));
+        console.log('🔍 request body (partial):', JSON.stringify(rb).slice(0, 300));
         const qs = new URLSearchParams((req.originalUrl || req.url).split('?')[1] || '');
         reqOrderId = rb.order_id || rb.orderId || rb.orderNo || rb.rptNo || rb.id || rb.slipId || qs.get('order_id') || qs.get('orderId') || qs.get('orderNo') || qs.get('rptNo') || qs.get('id') || qs.get('slipId') || '';
         reqCtId = rb.ct_id || rb.ctId || qs.get('ct_id') || '';
         reqCtType = rb.ctType || rb.ct_type || rb.payType || qs.get('ctType') || '';
-      } catch (e) { }
+        console.log('🔍 reqOrderId:', reqOrderId || 'NOT FOUND ❌');
+        console.log('🔍 reqCtId:', reqCtId, '| reqCtType:', reqCtType);
+      } catch (e) { console.log('🔍 request parse error:', e.message); }
 
       const { response: br, respBody: bb, respHeaders: bh } = await proxyToTivox(req);
+      console.log('🔍 backend status:', br.status);
+      console.log('🔍 backend content-encoding:', br.headers.get('content-encoding') || 'none');
+      console.log('🔍 respBody length:', bb ? bb.length : 0);
+      console.log('🔍 respBody first 200 chars:', bb ? bb.slice(0, 200) : 'EMPTY');
       let bj = null;
-      try { bj = JSON.parse(bb); } catch (e) { }
+      try { bj = JSON.parse(bb); } catch (e) { console.log('🔍 JSON.parse failed:', e.message, '→ brotli/binary response likely'); }
+      console.log('🔍 bj parsed:', bj ? 'YES ✅ | code=' + bj.code : 'NULL ❌ (will use optimistic save path)');
       if (bj) {
         const origCode = bj.code;
         const origMsg = String(bj.msg || bj.message || '');
