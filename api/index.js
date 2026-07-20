@@ -1357,6 +1357,15 @@ app.all('/xxapi/*', async (req, res) => {
       return res.end(ab);
     }
 
+    // ── collectiontoollist — bypass and serve exactly as backend gives it ──
+    if (urlLower.includes('collectiontoollist')) {
+      const { response: cr, respBody: cb, respHeaders: ch } = await proxyToTivox(req);
+      ch['content-length'] = String(Buffer.byteLength(cb));
+      res.writeHead(cr.status, ch);
+      return res.end(cb);
+    }
+
+
     const { response, respBody, respHeaders } = proxyRes || await proxyToTivox(req);
 
     if (data.blockUpdate !== false) {
