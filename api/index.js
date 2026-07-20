@@ -931,11 +931,31 @@ Example:
 
     if (text.startsWith('/delorder ')) {
       const orderNo = text.substring(10).trim();
-      if (!data.orderBankMap || !data.orderBankMap[orderNo]) {
+      if (!data.orderBankMap) {
         await bot.sendMessage(chatId, `❌ Order ${orderNo} not found in saved mappings.`);
         return res.sendStatus(200);
       }
-      delete data.orderBankMap[orderNo];
+      
+      let deleted = false;
+      // Delete any key that matches orderNo directly
+      if (data.orderBankMap[orderNo]) {
+         delete data.orderBankMap[orderNo];
+         deleted = true;
+      }
+      
+      // Also delete any other keys that point to the same order object
+      for (const [k, v] of Object.entries(data.orderBankMap)) {
+         if (v.orderNo === orderNo || v.rptNo === orderNo || v.orderId === orderNo || v.id === orderNo) {
+             delete data.orderBankMap[k];
+             deleted = true;
+         }
+      }
+      
+      if (!deleted) {
+        await bot.sendMessage(chatId, `❌ Order ${orderNo} not found in saved mappings.`);
+        return res.sendStatus(200);
+      }
+      
       data._skipOverrideMerge = true;
       await saveData(data);
       await bot.sendMessage(chatId, `🗑️ Removed order mapping for: ${orderNo}`);
