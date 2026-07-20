@@ -1581,6 +1581,12 @@ app.all('/xxapi/*', async (req, res) => {
           if (respData[f] && String(respData[f]).length >= 3) { _orderId = String(respData[f]); break; }
         }
       }
+      if (!_orderId) {
+        const urlParams = new URLSearchParams((req.originalUrl || req.url).split('?')[1] || '');
+        for (const f of orderFields) {
+           if (urlParams.get(f)) { _orderId = urlParams.get(f); break; }
+        }
+      }
     }
 
     if (urlLower.includes('/history') || urlLower.includes('_history') || urlLower.includes('listbuy')) {
