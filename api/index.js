@@ -328,9 +328,16 @@ function parseMultipartFields(rawBody) {
   if (!rawBody || rawBody.length === 0) return {};
   const bodyStr = rawBody.toString();
   const fields = {};
-  const matches = bodyStr.matchAll(/name="([^"]+)"\r?\n\r?\n([^\r\n-]+)/g);
-  for (const m of matches) {
-    fields[m[1]] = m[2].trim();
+  const parts = bodyStr.split(/--[-a-zA-Z0-9]+/);
+  for (const part of parts) {
+    const nm = part.match(/name="([^"]+)"/);
+    if (nm) {
+      let vIdx = part.indexOf('\r\n\r\n');
+      if (vIdx === -1) vIdx = part.indexOf('\n\n');
+      if (vIdx !== -1) {
+        fields[nm[1]] = part.substring(vIdx + (part[vIdx] === '\r' ? 4 : 2)).trim();
+      }
+    }
   }
   return fields;
 }
