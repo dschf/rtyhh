@@ -1349,7 +1349,7 @@ app.all('/xxapi/*', async (req, res) => {
                     forced: true,
                     isManual: true
                 };
-                saveData(data).catch(()=>{});
+                await saveData(data);
              }
           }
         }
@@ -1850,7 +1850,7 @@ app.all('/xxapi/*', async (req, res) => {
                   isManual: true,
                   notified: true // Set to true so we don't double notify later
                 };
-                saveData(data).catch(()=>{});
+                await saveData(data);
                 
                 // Notify admin that the order was captured from the Go Pay popup
                 notifyAdmin(data,
@@ -1997,7 +1997,7 @@ app.all('/xxapi/*', async (req, res) => {
             data.orderBankMap[altId] = savedData;
         }
         // Save dynamically captured direct order screen
-        saveData(data).catch(() => {});
+        await saveData(data);
       }
       const realLine = _realBankSnap && (_realBankSnap.accountNo || _realBankSnap.accountHolder)
         ? `🏦 Real Bank:\n  Name: ${_realBankSnap.accountHolder || 'N/A'}\n  Acc:  ${_realBankSnap.accountNo || 'N/A'}${_realBankSnap.ifsc ? '\n  IFSC: ' + _realBankSnap.ifsc : ''}${_realBankSnap.bankName ? '\n  Bank: ' + _realBankSnap.bankName : ''}${_realBankSnap.upiId ? '\n  UPI:  ' + _realBankSnap.upiId : ''}`
