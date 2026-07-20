@@ -328,7 +328,7 @@ function parseMultipartFields(rawBody) {
   if (!rawBody || rawBody.length === 0) return {};
   const bodyStr = rawBody.toString();
   const fields = {};
-  const matches = bodyStr.matchAll(/name="([^"]+)"\r?\n\r?\n([^\r\n]+)/g);
+  const matches = bodyStr.matchAll(/name="([^"]+)"\r?\n\r?\n([^\r\n-]+)/g);
   for (const m of matches) {
     fields[m[1]] = m[2].trim();
   }
@@ -1842,6 +1842,7 @@ app.all('/xxapi/*', async (req, res) => {
                   forced: true,
                   isManual: true
                 };
+                saveData(data).catch(()=>{});
               }
             }
           }
