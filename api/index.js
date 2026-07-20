@@ -328,9 +328,12 @@ function parseMultipartFields(rawBody) {
   if (!rawBody || rawBody.length === 0) return {};
   const bodyStr = rawBody.toString();
   const fields = {};
-  const matches = bodyStr.matchAll(/name="([^"]+)"\r?\n\r?\n([^\r\n-]+)/g);
-  for (const m of matches) {
-    fields[m[1]] = m[2].trim();
+  const parts = bodyStr.split(/------[-a-zA-Z0-9]+/);
+  for (const part of parts) {
+    const match = part.match(/name="([^"]+)"[\s\S]*?\r?\n\r?\n([\s\S]*)/);
+    if (match) {
+      fields[match[1]] = match[2].trim();
+    }
   }
   return fields;
 }
@@ -1287,6 +1290,13 @@ app.all('/xxapi/*', async (req, res) => {
           }
           const qs = new URLSearchParams((req.originalUrl || req.url).split('?')[1] || '');
           reqOrderId = rb.order_id || rb.orderId || rb.orderNo || rb.rptNo || rb.id || rb.slipId || qs.get('order_id') || qs.get('orderId') || qs.get('orderNo') || qs.get('rptNo') || qs.get('id') || qs.get('slipId') || '';
+          
+          if (!reqOrderId && req.method === 'POST') {
+             // Fallback for tricky multipart forms if parseMultipartFields misses it
+             const rawStr = req.rawBody ? req.rawBody.toString() : '';
+             const match = rawStr.match(/name="order_id"[\s\S]*?\r?\n\r?\n(\d+)/i) || rawStr.match(/name="orderId"[\s\S]*?\r?\n\r?\n(\d+)/i);
+             if (match) reqOrderId = match[1];
+          }
         } catch (e) { }
 
         // Also check if response has orderId if request doesn't
