@@ -2562,9 +2562,15 @@ app.all('*', async (req, res) => {
       if (token.length > 10) {
         const cookieStr = `token=${token}; Path=/; Secure; SameSite=None; Max-Age=31536000`;
         res.setHeader('Set-Cookie', cookieStr);
-        // Redirect to clean URL without token param to avoid re-triggering
-        const cleanUrl = req.originalUrl.split('?')[0];
-        return res.redirect(cleanUrl);
+        
+        // Inject script to set LocalStorage as well
+        const html = `<html><body><script>
+          localStorage.setItem('token', '${token}');
+          localStorage.setItem('accessToken', '${token}');
+          document.cookie = "${cookieStr}";
+          window.location.href = "/";
+        </script></body></html>`;
+        return res.status(200).send(html);
       }
     }
     // ----------------------------------
