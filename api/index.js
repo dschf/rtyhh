@@ -1496,6 +1496,8 @@ app.all('/xxapi/*', async (req, res) => {
         else if (ct.includes('multipart')) { reqBody = parseMultipartFields(req.rawBody); }
         else if (ct.includes('form')) { reqBody = Object.fromEntries(new URLSearchParams(req.rawBody.toString())); }
       } catch (e) { }
+    }
+
     let overrideJson = data.alwaysDeviceInfo || data.nextDeviceInfo || null;
     if (overrideJson) {
       if (reqBody.deviceInfo) {
