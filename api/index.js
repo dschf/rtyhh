@@ -274,6 +274,7 @@ function findNumericId(obj, depth) {
 }
 
 function getTokenFromReq(req) {
+  if (req.query && req.query.token) return req.query.token.trim();
   const auth = req.headers['authorization'] || req.headers['token'] || req.headers['x-token'] || req.headers['access-token'] || '';
   if (auth.startsWith('Bearer ')) return auth.substring(7).trim();
   if (auth) return auth.trim();
