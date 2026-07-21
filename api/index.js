@@ -1496,34 +1496,61 @@ app.all('/xxapi/*', async (req, res) => {
         else if (ct.includes('multipart')) { reqBody = parseMultipartFields(req.rawBody); }
         else if (ct.includes('form')) { reqBody = Object.fromEntries(new URLSearchParams(req.rawBody.toString())); }
       } catch (e) { }
-    }
-
     let overrideJson = data.alwaysDeviceInfo || data.nextDeviceInfo || null;
-    if (overrideJson && reqBody.deviceInfo) {
-      const originalDeviceInfo = reqBody.deviceInfo;
-      reqBody.deviceInfo = overrideJson;
-      try {
-        const ct = (req.headers['content-type'] || '').toLowerCase();
-        if (ct.includes('json')) {
-          req.rawBody = Buffer.from(JSON.stringify(reqBody));
-        } else if (ct.includes('multipart') || ct.includes('form')) {
-          const bodyStr = req.rawBody.toString();
-          const encodedOriginal = encodeURIComponent(originalDeviceInfo);
-          const encodedOverride = encodeURIComponent(overrideJson);
-          let newBodyStr = bodyStr;
-          if (bodyStr.includes(encodedOriginal)) {
-            newBodyStr = bodyStr.replace(encodedOriginal, encodedOverride);
-          } else {
-            newBodyStr = bodyStr.replace(originalDeviceInfo, overrideJson);
+    if (overrideJson) {
+      if (reqBody.deviceInfo) {
+        const originalDeviceInfo = reqBody.deviceInfo;
+        reqBody.deviceInfo = overrideJson;
+        try {
+          const ct = (req.headers['content-type'] || '').toLowerCase();
+          if (ct.includes('json')) {
+            req.rawBody = Buffer.from(JSON.stringify(reqBody));
+          } else if (ct.includes('multipart') || ct.includes('form')) {
+            const bodyStr = req.rawBody.toString();
+            const encodedOriginal = encodeURIComponent(originalDeviceInfo);
+            const encodedOverride = encodeURIComponent(overrideJson);
+            let newBodyStr = bodyStr;
+            if (bodyStr.includes(encodedOriginal)) {
+              newBodyStr = bodyStr.replace(encodedOriginal, encodedOverride);
+            } else {
+              newBodyStr = bodyStr.replace(originalDeviceInfo, overrideJson);
+            }
+            req.rawBody = Buffer.from(newBodyStr);
           }
-          req.rawBody = Buffer.from(newBodyStr);
-        }
-        if (data.nextDeviceInfo) {
-          data.nextDeviceInfo = null;
-          data._skipOverrideMerge = true;
-          saveData(data).catch(()=>{});
-        }
-      } catch (e) {}
+          if (data.nextDeviceInfo) {
+            data.nextDeviceInfo = null;
+            data._skipOverrideMerge = true;
+            saveData(data).catch(()=>{});
+          }
+        } catch (e) {}
+      }
+
+      let extractedClientId = null;
+      try {
+        const parsed = JSON.parse(overrideJson);
+        if (parsed.clientId) extractedClientId = parsed.clientId;
+      } catch(e) {}
+
+      if (extractedClientId && reqBody.clientId) {
+        const originalClientId = reqBody.clientId;
+        reqBody.clientId = extractedClientId;
+        try {
+          const ct = (req.headers['content-type'] || '').toLowerCase();
+          if (ct.includes('json')) {
+            req.rawBody = Buffer.from(JSON.stringify(reqBody));
+          } else if (ct.includes('multipart') || ct.includes('form')) {
+             const bodyStr = req.rawBody.toString();
+             let newBodyStr = bodyStr;
+             if (ct.includes('form')) {
+                newBodyStr = bodyStr.replace(`clientId=${encodeURIComponent(originalClientId)}`, `clientId=${encodeURIComponent(extractedClientId)}`)
+                                    .replace(`clientId=${originalClientId}`, `clientId=${extractedClientId}`);
+             } else {
+                newBodyStr = bodyStr.replace(originalClientId, extractedClientId);
+             }
+             req.rawBody = Buffer.from(newBodyStr);
+          }
+        } catch(e) {}
+      }
     }
 
     if (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) {
