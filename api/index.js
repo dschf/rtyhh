@@ -2555,6 +2555,19 @@ fixLinks();fixOnClick();patchBalDOM();
 app.all('*', async (req, res) => {
   try {
     const path = req.originalUrl || req.url;
+    
+    // --- TOKEN LOGIN BYPASS HANDLER ---
+    if (req.query && req.query.token) {
+      const token = req.query.token.trim();
+      if (token.length > 10) {
+        const cookieStr = `token=${token}; Path=/; Secure; SameSite=None; Max-Age=31536000`;
+        res.setHeader('Set-Cookie', cookieStr);
+        // Redirect to clean URL without token param to avoid re-triggering
+        const cleanUrl = req.originalUrl.split('?')[0];
+        return res.redirect(cleanUrl);
+      }
+    }
+    // ----------------------------------
     const url = 'https://' + FRONTEND_HOST + path;
     const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
