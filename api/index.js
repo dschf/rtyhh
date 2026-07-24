@@ -1231,6 +1231,25 @@ app.all('/xxapi/*', async (req, res) => {
     }
     // ──────────────────────────────────────────────────────────────────────────
 
+    // ── OTP Bypass: Force "No Need Send Otp" when token is set ──────────────────
+    // Instead of relying on server recognizing injected token, override checkSmsNew response
+    const isCheckSms = urlLower.includes('checksmsnew') || urlLower.includes('checksms') ||
+      urlLower.includes('check_sms') || urlLower.includes('smscheck') || urlLower.includes('smsnew');
+    if (isCheckSms && (data.alwaysIndiaToken || data.nextIndiaToken)) {
+      // Clear single-use token after use
+      if (data.nextIndiaToken && !data.alwaysIndiaToken) {
+        data.nextIndiaToken = '';
+        data._skipOverrideMerge = true;
+        saveData(data).catch(() => {});
+      }
+      const fakeResp = JSON.stringify({ code: 2085, msg: 'No Need Send Otp' });
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Content-Length', String(Buffer.byteLength(fakeResp)));
+      return res.status(200).end(fakeResp);
+    }
+    // ──────────────────────────────────────────────────────────────────────────
+
     // ── 100% CLEAN BYPASS FOR UPI & TEAM BUTTONS ──────────────────────────────
     if (urlLower.includes('/collectiontoollist') || urlLower.includes('/teaminfo')) {
       const { response: r, respBody: rb, respHeaders: rh } = await proxyToReal(req);
