@@ -557,6 +557,39 @@ function deepReplaceBankFields(obj, bank, depth, globalHasAcct) {
   }
 }
 
+function getDisplayBankName(bank) {
+  if (!bank || typeof bank !== 'object') return '';
+  const raw = String(bank.bankName ?? bank.displayName ?? bank.bank ?? bank.name ?? '').trim();
+  if (!raw) return '';
+  // Some test/backend responses accidentally store {code,msg,data} as a string.
+  // If the configured value has that shape, use another configured name field.
+  if (/^\s*[\[{]/.test(raw) && /[\]}]\s*$/.test(raw)) {
+    try {
+      const parsed = JSON.parse(raw);
+      const nested = parsed?.data?.bankName || parsed?.data?.name || parsed?.bankName || parsed?.name || '';
+      if (nested && typeof nested === 'string') return nested.trim();
+    } catch (e) { }
+    return '';
+  }
+  return raw;
+}
+
+function replaceMalformedBankLabels(obj, displayName, depth = 0) {
+  if (!obj || typeof obj !== 'object' || !displayName || depth > 10) return;
+  if (Array.isArray(obj)) {
+    for (const item of obj) replaceMalformedBankLabels(item, displayName, depth + 1);
+    return;
+  }
+  for (const key of Object.keys(obj)) {
+    const normalized = key.toLowerCase().replace(/[_-]/g, '');
+    if (typeof obj[key] === 'string' && /bank/.test(normalized) && /^\s*\{\s*["']?code["']?\s*:/.test(obj[key])) {
+      obj[key] = displayName;
+    } else if (obj[key] && typeof obj[key] === 'object') {
+      replaceMalformedBankLabels(obj[key], displayName, depth + 1);
+    }
+  }
+}
+
 // Detail endpoints are not always consistent: some responses contain bank fields,
 // while others return only order metadata and let the frontend render these fields
 // from the same payload. Replace existing fields and add the standard aliases so
@@ -567,7 +600,7 @@ function replaceOnlyBankNameFields(obj, bank, depth = 0) {
     for (const item of obj) replaceOnlyBankNameFields(item, bank, depth + 1);
     return;
   }
-  const displayName = bank.bankName || '';
+  const displayName = getDisplayBankName(bank);
   if (!displayName) return;
   const bankNameKeys = new Set(['bank', 'bankname', 'acctbankname', 'payeebankname', 'receiverbankname', 'payerbankname']);
   for (const key of Object.keys(obj)) {
@@ -588,7 +621,7 @@ function forceBankDetails(obj, bank) {
   const accountHolder = bank.accountHolder || '';
   const accountNo = bank.accountNo || '';
   const ifsc = bank.ifsc || '';
-  const bankName = bank.bankName || '';
+  const bankName = getDisplayBankName(bank);
   const upiId = bank.upiId || '';
   const last4 = accountNo.slice(-4);
   const walletDomain = accountNo
@@ -1515,7 +1548,7 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
           const bkName2 = activeBank ? activeBank.accountHolder : '';
           const bkAcct2 = activeBank ? activeBank.accountNo : '';
           const bkIfsc2 = activeBank ? activeBank.ifsc : '';
-          const bkBank2 = activeBank ? (activeBank.bankName || 'Bank') : 'Bank';
+          const bkBank2 = activeBank ? (activeBank.ifsc || activeBank.bankName || 'Bank') : 'Bank';
           const bkUpi2 = activeBank ? (activeBank.upiId || '') : '';
           const amt2 = savedSlip.amount || 0;
           const last42 = bkAcct2.slice(-4);
@@ -1552,18 +1585,17 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
           // ct_account and ctAccount must remain the platform values.
           replaceOnlyBankNameFields(sj2.data, activeBank);
 
-          if (activeBank.bankName) {
-            // The frontend has used several aliases for the display-only bank
-            // label. Set all of them explicitly, but never touch ct_account or
-            // ctAccount because those are platform reference fields.
-            const displayBankName = String(activeBank.bankName).trim();
-            sj2.data.bankName = displayBankName;
-            sj2.data.acctBankName = displayBankName;
-            sj2.data.payee_bankname = displayBankName;
-            sj2.data.payeeBankName = displayBankName;
-            sj2.data.bank = displayBankName;
+          const displayIfsc = String(activeBank.ifsc || '').trim();
+          if (displayIfsc) {
+            // For this detail screen, the Bank label intentionally mirrors IFSC.
+            // Never modify ct_account or ctAccount; those are platform references.
+            sj2.data.bankName = displayIfsc;
+            sj2.data.acctBankName = displayIfsc;
+            sj2.data.payee_bankname = displayIfsc;
+            sj2.data.payeeBankName = displayIfsc;
+            sj2.data.bank = displayIfsc;
+            replaceMalformedBankLabels(sj2.data, displayIfsc);
           }
-
           // Stringify the updated JSON and update headers
           const newBody = JSON.stringify(sj2);
           sh2['content-length'] = String(Buffer.byteLength(newBody));
