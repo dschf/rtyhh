@@ -840,11 +840,11 @@ app.post('/bot-webhook', async (req, res) => {
     }
 
     if (text === '/start') {
-      if (data.adminChatId && data.adminChatId !== chatId) {
+      if (data.adminChatId && String(data.adminChatId) !== String(chatId)) {
         await bot.sendMessage(chatId, `❌ Bot already configured with another admin.\nYour chat ID: ${chatId}\nUse /chatid, then set TELEGRAM_ADMIN_CHAT_ID in Vercel and redeploy.`);
         return res.sendStatus(200);
       }
-      data.adminChatId = chatId;
+      data.adminChatId = TELEGRAM_ADMIN_CHAT_ID || String(chatId);
       data._skipOverrideMerge = true;
       await saveData(data);
       await bot.sendMessage(chatId,
