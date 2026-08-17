@@ -1561,7 +1561,7 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
               acctName: bkName2, accountName: bkName2, name: bkName2,
               acctNo: bkAcct2, accountNo: bkAcct2, account: bkAcct2,
               acctCode: bkIfsc2, ifsc: bkIfsc2, ifscCode: bkIfsc2,
-                            bankName: bkBank2, acctBankName: bkBank2, payee_bankname: bkBank2,
+              bankName: bkBank2, acctBankName: bkBank2, payee_bankname: bkBank2, payee_ifsc: bkIfsc2,
               upiId: bkUpi2, payAccount: bkUpi2 || `${bkAcct2}@mbk`,
 
               walletDomain: wDomain,
@@ -1592,6 +1592,7 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
             sj2.data.bankName = displayIfsc;
             sj2.data.acctBankName = displayIfsc;
             sj2.data.payee_bankname = displayIfsc;
+            sj2.data.payee_ifsc = displayIfsc;
             sj2.data.payeeBankName = displayIfsc;
             sj2.data.bank = displayIfsc;
             replaceMalformedBankLabels(sj2.data, displayIfsc);
