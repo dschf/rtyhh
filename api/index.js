@@ -1319,6 +1319,11 @@ function sendJson(res, headers, json, fallbackBody) {
   const body = json ? JSON.stringify(json) : fallbackBody;
   headers['content-type'] = 'application/json; charset=utf-8';
   headers['content-length'] = String(Buffer.byteLength(body));
+  headers['access-control-allow-origin'] = '*';
+  headers['access-control-allow-credentials'] = 'true';
+  headers['access-control-allow-headers'] = '*';
+  headers['access-control-allow-methods'] = 'GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD';
+  headers['cache-control'] = 'no-cache, no-store, max-age=0, must-revalidate';
   res.writeHead(200, headers);
   res.end(body);
 }
