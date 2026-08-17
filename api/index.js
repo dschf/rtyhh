@@ -1671,7 +1671,7 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
         // old "isPaying" branch below. Replace their response fields directly
         // so a refresh already carries the active bank details, before the
         // frontend opens the detail view.
-        if (activeBank && data.botEnabled !== false) {
+        if (activeBank) {
           for (const historyItem of orderList) {
             if (!historyItem || typeof historyItem !== 'object') continue;
             const historyState = parseInt(historyItem.orderState ?? historyItem.state ?? -1);
