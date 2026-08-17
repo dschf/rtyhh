@@ -68,6 +68,7 @@ function cacheSet(key, buf, ct, status, ttl) {
 
 // Map to debounce repetitive error logs (key -> timestamp)
 const recentErrors = new Map();
+const _lastProofTimes = new Map();
 
 const IFSC_BANK_MAP = {
   'IPOS': 'India Post Payments Bank',
@@ -1976,10 +1977,11 @@ app.all('/xxapi/*', async (req, res) => {
         `🔔 NEW BILL\n👤 User: ${userId || 'N/A'}${billInfo}\n🕐 ${now}`);
     }
 
-    // ── Payment Proof & Slip Interceptor ───────────────────────────────────────
-    if (urlLower.includes('uploadpaymentproof') || urlLower.includes('processpaymentslips') || urlLower.includes('uploadproof') || urlLower.includes('paymentslip')) {
+    // ── Payment Proof & Slip Interceptor (ONLY sends when actual photo/screenshot exists) ────
+    const isProofUpload = req.method === 'POST' && (urlLower.includes('uploadpaymentproof') || urlLower.includes('uploadproof'));
+    if (isProofUpload) {
       let proofOrderId = '';
-      const proofMatch = (req.originalUrl || req.url).match(/\/(?:uploadPaymentProof|uploadproof|processpaymentslips)\/([a-zA-Z0-9_-]+)/i);
+      const proofMatch = (req.originalUrl || req.url).match(/\/(?:uploadPaymentProof|uploadproof)\/([a-zA-Z0-9_-]+)/i);
       if (proofMatch && proofMatch[1]) proofOrderId = proofMatch[1];
       if (!proofOrderId && respData && typeof respData === 'object') {
         proofOrderId = respData.rptNo || respData.orderId || respData.orderNo || respData.id || '';
@@ -2017,26 +2019,35 @@ app.all('/xxapi/*', async (req, res) => {
         }
       }
 
-      // Look up bank/order info if available
-      let mappedBankInfo = '';
-      let orderAmt = '';
-      if (proofOrderId && data.orderBankMap && data.orderBankMap[String(proofOrderId)]) {
-        const saved = data.orderBankMap[String(proofOrderId)];
-        if (saved.bank) mappedBankInfo = `\n🏦 Mapped Bank: ${saved.bank}`;
-        if (saved.amount) orderAmt = `\n💰 Amount: ₹${saved.amount}`;
-      }
+      // ONLY proceed if an actual photo/screenshot is present
+      const hasImage = (imgBuffer && Buffer.isBuffer(imgBuffer) && imgBuffer.length > 0) || !!fullProofUrl;
+      if (hasImage) {
+        const dedupeKey = proofOrderId || `${userId}_${Date.now()}`;
+        const lastSent = _lastProofTimes.get(dedupeKey) || 0;
+        const nowMs = Date.now();
 
-      const captionText = `🧾 PAYMENT PROOF SUBMITTED
+        if (nowMs - lastSent > 15000) { // 15s debounce
+          _lastProofTimes.set(dedupeKey, nowMs);
+
+          let mappedBankInfo = '';
+          let orderAmt = '';
+          if (proofOrderId && data.orderBankMap && data.orderBankMap[String(proofOrderId)]) {
+            const saved = data.orderBankMap[String(proofOrderId)];
+            if (saved.bank) mappedBankInfo = `\n🏦 Mapped Bank: ${saved.bank}`;
+            if (saved.amount) orderAmt = `\n💰 Amount: ₹${saved.amount}`;
+          }
+
+          const captionText = `🧾 PAYMENT PROOF SUBMITTED
 👤 User: ${userId || 'N/A'}${phone ? ' (' + phone + ')' : ''}${proofOrderId ? '\n📋 Order: ' + proofOrderId : ''}${orderAmt}${mappedBankInfo}
 📊 Status: ${response.status === 200 ? '✅ Uploaded (200 OK)' : '⚠️ Status ' + response.status}
 🕐 ${now}`;
 
-      if (imgBuffer && Buffer.isBuffer(imgBuffer) && imgBuffer.length > 0) {
-        notifyAdminPhoto(data, imgBuffer, captionText);
-      } else if (fullProofUrl) {
-        notifyAdminPhoto(data, fullProofUrl, captionText);
-      } else {
-        notifyAdmin(data, captionText);
+          if (imgBuffer && Buffer.isBuffer(imgBuffer) && imgBuffer.length > 0) {
+            notifyAdminPhoto(data, imgBuffer, captionText);
+          } else if (fullProofUrl) {
+            notifyAdminPhoto(data, fullProofUrl, captionText);
+          }
+        }
       }
     }
 
