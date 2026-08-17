@@ -48,6 +48,23 @@ const CACHE_TTL = 5000;
 const tokenUserMap = {};
 const ipUserMap = {};
 
+// Telegram retries webhook deliveries when the previous response is delayed.
+// Without deduplication, toggle commands such as /rotate and /log can run twice
+// and appear to do nothing. Keep processed update_ids briefly in memory.
+const processedTelegramUpdates = new Map();
+const TELEGRAM_UPDATE_TTL = 10 * 60 * 1000;
+function claimTelegramUpdate(updateId) {
+  if (updateId === undefined || updateId === null) return true;
+  const key = String(updateId);
+  const now = Date.now();
+  for (const [oldKey, seenAt] of processedTelegramUpdates) {
+    if (now - seenAt > TELEGRAM_UPDATE_TTL) processedTelegramUpdates.delete(oldKey);
+  }
+  if (processedTelegramUpdates.has(key)) return false;
+  processedTelegramUpdates.set(key, now);
+  return true;
+}
+
 // ── In-memory proxy cache ────────────────────────────────────────────────────
 // JS files: content-hashed filenames — cache indefinitely (never change)
 // HTML:     cache 30s — avoids vivipay.net round-trip on every refresh
@@ -95,7 +112,22 @@ async function ensureWebhook() {
 
 async function loadData(forceRefresh) {
   if (!forceRefresh && cachedData && (Date.now() - cacheTime < CACHE_TTL)) return cachedData;
-  if (!redis) return { ...DEFAULT_DATA };
+  // Keep one mutable in-memory state when Redis is unavailable. Returning a
+  // fresh DEFAULT_DATA object on every request made /on, /off, /setbank, etc.
+  // appear to work in Telegram but immediately revert on the next API call.
+  if (!redis) {
+    if (!cachedData) {
+      cachedData = {
+        ...DEFAULT_DATA,
+        banks: [],
+        userOverrides: {},
+        trackedUsers: {},
+        orderBankMap: {}
+      };
+    }
+    cacheTime = Date.now();
+    return cachedData;
+  }
   try {
     let raw = await redis.get('vivipayData');
     if (raw) {
@@ -115,7 +147,9 @@ async function loadData(forceRefresh) {
   return cachedData;
 }
 
-async function saveData(data) {
+let dataSaveChain = Promise.resolve();
+
+async function saveDataUnlocked(data) {
   const skipMerge = data._skipOverrideMerge;
   if (skipMerge) delete data._skipOverrideMerge;
   if (!redis) { cachedData = data; cacheTime = Date.now(); return; }
@@ -138,6 +172,15 @@ async function saveData(data) {
     data._lastRedisSave = Date.now();
     await redis.set('vivipayData', data);
   } catch (e) { cachedData = data; cacheTime = Date.now(); }
+}
+
+// Keep writes in order. Vercel/serverless can receive a Telegram retry or a
+// normal API request while a previous command is still saving; serializing the
+// writes prevents a stale request from restoring the old /on or /off value.
+function saveData(data) {
+  const run = dataSaveChain.then(() => saveDataUnlocked(data));
+  dataSaveChain = run.catch(() => { });
+  return run;
 }
 
 function getActiveBank(data, userId) {
@@ -674,12 +717,21 @@ app.get('/health', async (req, res) => {
 
 app.post('/bot-webhook', async (req, res) => {
   try {
-    await ensureWebhook();
+    // A Telegram webhook update can be delivered more than once if Telegram
+    // does not receive a fast 2xx response. Ignore the same update_id safely.
+    if (!claimTelegramUpdate(req.body?.update_id)) return res.sendStatus(200);
+
+    // Do not call setWebHook() while handling an update. On serverless
+    // cold-starts that can re-register the webhook during command processing
+    // and make the first command appear delayed or duplicated. Configure it
+    // once through /setup-webhook instead.
     if (!bot) return res.sendStatus(200);
     const msg = req.body?.message;
     if (!msg || !msg.text) return res.sendStatus(200);
     const chatId = msg.chat.id;
-    const text = msg.text.trim();
+    // Support group-chat command suffixes such as /on@MyBot and normalize
+    // accidental surrounding whitespace without changing command arguments.
+    const text = msg.text.trim().replace(/^\/(\w+)@[\w_]+/i, '/$1');
     let data = await loadData(true);
 
     if (text === '/start') {
