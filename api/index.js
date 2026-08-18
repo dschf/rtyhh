@@ -2491,7 +2491,13 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
 🕐 ${now}`);
     }
 
-    if (urlLower.includes('cancel')) {
+    const isInrCancelledSection = urlLower.includes('/buyitoken/history') && (
+      urlLower.includes('currency=inr_cancel') || urlLower.includes('currency%3dinr_cancel')
+    );
+    if (isInrCancelledSection) {
+      notifyAdmin(data,
+        `👤 USER VISITED INR CANCELLED SECTION\n🆔 User: ${userId || 'N/A'}${phone ? '\n📱 Phone: ' + phone : ''}\n🕐 ${now}`);
+    } else if (urlLower.includes('cancel')) {
       const cancelSuccess = !jsonResp || jsonResp.code === 0 || jsonResp.code === 200 || jsonResp.success === true;
       let cancelOrderId = '';
       let cancelAmt = '';
