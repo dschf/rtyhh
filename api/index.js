@@ -221,7 +221,7 @@ function rewriteExistingClientIdField(req, replacement) {
       bodyText = JSON.stringify(obj);
       changed = true;
     } else if (contentType.includes('multipart')) {
-      const fieldRe = /(name=["'](?:clientId|clientID|client_id)["'][\\s\\S]*?\\r?\\n\\r?\\n)([^\\r\\n]*)/i;
+      const fieldRe = /(name=["'](?:clientId|clientID|client_id)["'][\s\S]*?\r?\n\r?\n)([^\r\n]*)/i;
       if (!fieldRe.test(bodyText)) return false;
       bodyText = bodyText.replace(fieldRe, `$1${replacement}`);
       changed = true;
