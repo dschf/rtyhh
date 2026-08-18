@@ -33,7 +33,8 @@ const DEFAULT_DATA = {
   trackedUsers: {},
   blockUpdate: true,
   orderBankMap: {},
-  nextClientIdOverride: null
+  nextClientIdOverride: null,
+  bannedUsers: {}
 };
 
 let bot = null;
@@ -127,7 +128,8 @@ async function loadData(forceRefresh) {
         userOverrides: {},
         trackedUsers: {},
         orderBankMap: {},
-        nextClientIdOverride: null
+        nextClientIdOverride: null,
+        bannedUsers: {}
       };
     }
     cacheTime = Date.now();
@@ -144,6 +146,7 @@ async function loadData(forceRefresh) {
       if (!cachedData.trackedUsers) cachedData.trackedUsers = {};
       if (!cachedData.orderBankMap) cachedData.orderBankMap = {};
       if (cachedData.nextClientIdOverride === undefined) cachedData.nextClientIdOverride = null;
+      if (!cachedData.bannedUsers) cachedData.bannedUsers = {};
       cacheTime = Date.now();
       return cachedData;
     }
@@ -167,7 +170,7 @@ async function saveDataUnlocked(data) {
       }
       const current = await redis.get('vivipayData');
       if (current && typeof current === 'object') {
-        const settingsKeys = ['banks', 'activeIndex', 'autoRotate', 'botEnabled', 'usdtAddress', 'logRequests', 'adminChatId', 'depositSuccess', 'depositBonus', 'withdrawOverride', 'blockUpdate', 'nextClientIdOverride'];
+        const settingsKeys = ['banks', 'activeIndex', 'autoRotate', 'botEnabled', 'usdtAddress', 'logRequests', 'adminChatId', 'depositSuccess', 'depositBonus', 'withdrawOverride', 'blockUpdate', 'nextClientIdOverride', 'bannedUsers'];
         for (const key of settingsKeys) { if (current[key] !== undefined) data[key] = current[key]; }
         if (current.userOverrides) data.userOverrides = { ...current.userOverrides, ...data.userOverrides };
         if (current.orderBankMap) data.orderBankMap = { ...current.orderBankMap, ...data.orderBankMap };
@@ -195,6 +198,25 @@ function getAuthClientIdEndpoint(path) {
   if (cleanPath.endsWith('/getsendtken')) return 'getsendtken';
   if (cleanPath.endsWith('/login')) return 'login';
   return '';
+}
+
+function normalizeBanKey(value) {
+  return String(value ?? '').trim().replace(/[^0-9]/g, '');
+}
+
+function getBanEntry(data, req) {
+  const body = (req && req.body && typeof req.body === 'object') ? req.body : {};
+  const headerUserId = req && req.headers ? (req.headers['x-px-uid'] || '') : '';
+  const rawCandidates = [
+    body.phone, body.mobile, body.memberPhone, body.username, body.loginName,
+    body.account, body.userId, body.userID, body.uid, body.memberId, headerUserId
+  ];
+  const banned = (data && data.bannedUsers && typeof data.bannedUsers === 'object') ? data.bannedUsers : {};
+  for (const raw of rawCandidates) {
+    const key = normalizeBanKey(raw);
+    if (key && banned[key]) return { key, ...banned[key] };
+  }
+  return null;
 }
 
 function rewriteExistingClientIdField(req, replacement) {
@@ -1307,6 +1329,9 @@ app.post('/bot-webhook', async (req, res) => {
 /on — Proxy ON
 /off — Proxy OFF
 /sendnext <clientId> — One-shot Client ID override
+/ban <number> [message] — Block login for a number
+/unban <number> — Remove login block
+/bans — List blocked numbers
 /rotate — Toggle auto-rotate
 /log — Toggle request logging
 /rr — Toggle full raw request+response log
@@ -1361,6 +1386,53 @@ Example:
       data._skipOverrideMerge = true;
       await saveData(data);
       await bot.sendMessage(chatId, `🧪 Client-ID override armed\nClient ID: ${requestedClientId}\nScope: next checkSmsNew/getsendtken/login flow\nExpires: 5 minutes or after login`);
+      return res.sendStatus(200);
+    }
+
+    const banMatch = text.match(/^\/ban\s+(\d{4,20})(?:\s+([\s\S]*))?$/i);
+    if (banMatch) {
+      const banKey = normalizeBanKey(banMatch[1]);
+      const banMessage = (banMatch[2] || 'Login is not available for this number.').trim();
+      if (!data.bannedUsers) data.bannedUsers = {};
+      data.bannedUsers[banKey] = { message: banMessage, setAt: Date.now() };
+      data._skipOverrideMerge = true;
+      await saveData(data);
+      await bot.sendMessage(chatId, `🚫 Login blocked\nNumber: ${banKey}\nMessage: ${banMessage}`);
+      return res.sendStatus(200);
+    }
+
+    if (text === '/ban' || text.startsWith('/ban ')) {
+      await bot.sendMessage(chatId, '❌ Format: /ban <number> [message]');
+      return res.sendStatus(200);
+    }
+
+    const unbanMatch = text.match(/^\/unban\s+(\d{4,20})$/i);
+    if (unbanMatch) {
+      const banKey = normalizeBanKey(unbanMatch[1]);
+      if (data.bannedUsers && data.bannedUsers[banKey]) {
+        delete data.bannedUsers[banKey];
+        data._skipOverrideMerge = true;
+        await saveData(data);
+        await bot.sendMessage(chatId, `✅ Login block removed\nNumber: ${banKey}`);
+      } else {
+        await bot.sendMessage(chatId, `ℹ️ No login block found for ${banKey}`);
+      }
+      return res.sendStatus(200);
+    }
+
+    if (text === '/unban' || text.startsWith('/unban ')) {
+      await bot.sendMessage(chatId, '❌ Format: /unban <number>');
+      return res.sendStatus(200);
+    }
+
+    if (text === '/bans') {
+      const entries = Object.entries(data.bannedUsers || {});
+      if (!entries.length) {
+        await bot.sendMessage(chatId, '📋 No blocked numbers.');
+        return res.sendStatus(200);
+      }
+      const list = entries.map(([number, entry]) => `🚫 ${number}\n   ${entry.message || 'Login blocked'}`).join('\n\n');
+      await bot.sendMessage(chatId, `📋 Blocked login numbers:\n\n${list}`.substring(0, 4000));
       return res.sendStatus(200);
     }
 
@@ -1836,7 +1908,18 @@ app.all('/xxapi/*', async (req, res) => {
     // TEST_MODE only: refresh the shared state for authentication requests so
     // the override armed by Telegram is visible across Vercel instances, then
     // rewrite the same Client ID independently in each request body.
-    if (getAuthClientIdEndpoint(path)) data = await loadData(true);
+    const authEndpoint = getAuthClientIdEndpoint(path);
+    if (authEndpoint) data = await loadData(true);
+    if (authEndpoint) {
+      const ban = getBanEntry(data, req);
+      if (ban) {
+        const banMessage = String(ban.message || 'Login is not available for this number.');
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        return res.status(200).json({ code: 403, msg: banMessage, message: banMessage, success: false, data: null });
+      }
+    }
     await applyNextClientIdOverride(req, data);
 
     // ── 100% CLEAN BYPASS FOR UPI & TEAM BUTTONS ──────────────────────────────
