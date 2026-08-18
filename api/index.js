@@ -268,6 +268,37 @@ function getSavedOrderMapping(data, valueOrOrder) {
   return null;
 }
 
+async function claimOrderNotification(data, valueOrOrder) {
+  if (!data || typeof data !== 'object') return false;
+  const candidates = collectOrderIdCandidates(valueOrOrder);
+  if (typeof valueOrOrder !== 'object' && valueOrOrder !== undefined && valueOrOrder !== null) {
+    const direct = normalizeOrderId(valueOrOrder);
+    if (direct) candidates.add(direct);
+  }
+  if (candidates.size === 0) return false;
+
+  const saved = getSavedOrderMapping(data, valueOrOrder);
+  const savedObj = parseSavedMapping(saved);
+  const canonical = normalizeOrderId(
+    savedObj && (savedObj.rptNo || savedObj.orderId || savedObj.orderNo || savedObj.id)
+  ) || [...candidates][0];
+  if (!canonical) return false;
+
+  if (!data.orderNotificationMap || typeof data.orderNotificationMap !== 'object' || Array.isArray(data.orderNotificationMap)) {
+    data.orderNotificationMap = {};
+  }
+  for (const key of Object.keys(data.orderNotificationMap)) {
+    if (candidates.has(normalizeOrderId(key))) return false;
+  }
+  if (data.orderNotificationMap[canonical]) return false;
+
+  data.orderNotificationMap[canonical] = { notifiedAt: Date.now() };
+  if (savedObj) savedObj.notified = true;
+  data._skipOverrideMerge = true;
+  try { await saveData(data); } catch (e) { }
+  return true;
+}
+
 function bankFromSavedOrder(saved) {
   saved = parseSavedMapping(saved);
   if (!saved || typeof saved !== 'object') return null;
@@ -2195,10 +2226,8 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
 
                   data.orderBankMap[String(orderId)] = savedData;
                   if (altId && altId !== orderId) data.orderBankMap[String(altId)] = savedData;
-                  saveData(data).catch(() => { });
 
-                  if (!savedData.notified) {
-                    savedData.notified = true;
+                  if (await claimOrderNotification(data, orderId)) {
                     notifyAdmin(data,
                       `✅ AUTO-CAPTURED FROM HISTORY
 💰 Amount: ₹${amt}
@@ -2310,7 +2339,7 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
               const walletScheme = inferWalletScheme(wc);
               const wDom = buildWalletDomain({ ...activeBank, walletDomain: originalWallet, walletScheme }, amt);
 
-              const alreadyNotified = data.orderBankMap[String(rptNo)] && data.orderBankMap[String(rptNo)].notified;
+              
 
               if (isNew) {
                 data.orderBankMap[String(rptNo)] = {
@@ -2359,11 +2388,9 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
                 }
               }
 
-              if (!alreadyNotified) {
-                if (data.orderBankMap[String(rptNo)]) {
-                    data.orderBankMap[String(rptNo)].notified = true;
-                }
-                // ALWAYS notify admin that the Go Pay popup was triggered
+              if (await claimOrderNotification(data, rptNo)) {
+                // Notify only once per canonical order ID, even when the page
+                // refreshes and waitconfirm is fetched again.
                 notifyAdmin(data,
                   `✅ BUY SUCCESSFUL (Go Pay)\n💰 Amount: ₹${amt}\n📋 Order: ${rptNo}\n💾 Order is saved for history\n━━━━━━━━━━━━━━━━━━━━\n🏦 Bank Was: (Popup Captured)\n━━━━━━━━━━━━━━━━━━━━\n🔄 Replaced With: ${bkName} | ${bkAcct} | ${bkIfsc}\n🕐 ${now}`);
               }
@@ -2577,14 +2604,12 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
       
       // Determine if order was actually replaced or just not replaced due to min amount
       // Also ensure we only notify ONCE per order.
-      const alreadyNotified = _orderId && data.orderBankMap && data.orderBankMap[_orderId] && data.orderBankMap[_orderId].notified;
       const hasValidData = _orderAmt !== null || _realBankSnap || _bankReplaced;
+      const shouldNotifyOrder = hasValidData
+        ? await claimOrderNotification(data, _orderId || respData)
+        : false;
 
-      if (!alreadyNotified && hasValidData) {
-        if (_orderId && data.orderBankMap && data.orderBankMap[_orderId]) {
-          data.orderBankMap[_orderId].notified = true;
-        }
-
+      if (shouldNotifyOrder) {
         if (_bankReplaced && _replacedBank) {
           notifyAdmin(data,
             `✅ BUY SUCCESSFUL
@@ -2692,14 +2717,9 @@ ${replaceLine}
             }
           }
 
-          // Check if we have already notified about this specific order ID
-          const alreadyNotified = data.orderBankMap[oId] && data.orderBankMap[oId].notified;
-
-          if (!alreadyNotified) {
-            // Mark as notified so we don't count it again
-            if (data.orderBankMap[oId]) {
-              data.orderBankMap[oId].notified = true;
-            }
+          // Claim by canonical rptNo/order ID so aliases and page refreshes
+          // cannot count or notify the same order twice.
+          if (await claimOrderNotification(data, oId)) {
             capturedCount++;
             logLines.push(`📋 ${oId}\n   💰 ₹${amt}  👤 ${acctName}\n   🏦 ${acctNo}${acctCode ? ' | ' + acctCode : ''}`);
           }
