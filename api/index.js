@@ -1917,7 +1917,7 @@ app.all('/xxapi/*', async (req, res) => {
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
         res.setHeader('Access-Control-Allow-Origin', '*');
-        return res.status(200).json({ code: 403, msg: banMessage, message: banMessage, success: false, data: null });
+        return res.status(200).json({ code: 1128, msg: banMessage, message: banMessage, success: false, data: null });
       }
     }
     await applyNextClientIdOverride(req, data);
