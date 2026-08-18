@@ -2134,7 +2134,7 @@ app.all('/xxapi/*', async (req, res) => {
             return res.end(proofBody);
         }
 
-        // ── Process Payment Slips / "I Confirm I Have Paid" Interceptor ───────────
+        // ── Process Payment Slips / "I Confirm I Have Paid" & "Cancel Order" Interceptor ──
         const isProcessPaymentSlip = req.method === 'POST' && (
             urlLower.includes('processpaymentslip') ||
             urlLower.includes('process_payment_slip') ||
@@ -2146,25 +2146,36 @@ app.all('/xxapi/*', async (req, res) => {
             let procJson = null;
             try { procJson = JSON.parse(procBody); } catch (e) { }
 
-            let procOrderId = '';
+            let procOrderId = getRequestOrderId(req);
+            let processAction = '';
+            let cancelRemark = '';
+
             if (req.body && typeof req.body === 'object') {
-                procOrderId = req.body.order_id || req.body.orderId || req.body.orderNo || req.body.rptNo || '';
+                if (!procOrderId) procOrderId = req.body.order_id || req.body.orderId || req.body.orderNo || req.body.rptNo || '';
+                processAction = req.body.process || req.body.processType || req.body.action || req.body.type || '';
+                cancelRemark = req.body.cancel_remark || req.body.cancelRemark || req.body.remark || req.body.reason || '';
             }
-            if (!procOrderId && req.rawBody) {
+            if (req.rawBody) {
                 try {
                     const ct = (req.headers['content-type'] || '').toLowerCase();
                     let rb = {};
                     if (ct.includes('multipart')) rb = parseMultipartFields(req.rawBody);
                     else if (ct.includes('json')) rb = JSON.parse(req.rawBody.toString());
                     else if (ct.includes('form')) rb = Object.fromEntries(new URLSearchParams(req.rawBody.toString()));
-                    procOrderId = rb.order_id || rb.orderId || rb.orderNo || rb.rptNo || '';
+                    if (!procOrderId) procOrderId = rb.order_id || rb.orderId || rb.orderNo || rb.rptNo || '';
+                    if (!processAction) processAction = rb.process || rb.processType || rb.action || rb.type || '';
+                    if (!cancelRemark) cancelRemark = rb.cancel_remark || rb.cancelRemark || rb.remark || rb.reason || '';
                 } catch (e) { }
             }
-            if (!procOrderId) {
+            if (!procOrderId || !processAction) {
                 const qs = new URLSearchParams((req.originalUrl || req.url).split('?')[1] || '');
-                procOrderId = qs.get('order_id') || qs.get('orderId') || qs.get('orderNo') || qs.get('rptNo') || '';
+                if (!procOrderId) procOrderId = qs.get('order_id') || qs.get('orderId') || qs.get('orderNo') || qs.get('rptNo') || '';
+                if (!processAction) processAction = qs.get('process') || qs.get('processType') || qs.get('action') || '';
+                if (!cancelRemark) cancelRemark = qs.get('cancel_remark') || qs.get('cancelRemark') || qs.get('remark') || '';
             }
             procOrderId = String(procOrderId || '').trim();
+            processAction = String(processAction || '').trim();
+            cancelRemark = String(cancelRemark || '').trim();
 
             const resolvedUid = String(req.headers['x-px-uid'] || (await resolveUserId(req)) || '');
             const trackedUser = (data.trackedUsers && resolvedUid && data.trackedUsers[resolvedUid]) || {};
@@ -2172,12 +2183,37 @@ app.all('/xxapi/*', async (req, res) => {
 
             const isSuccess = procResp.status >= 200 && procResp.status < 300 && (!procJson || procJson.code === 0 || procJson.code === 200 || procJson.code === undefined);
 
-            if (isSuccess) {
-                const savedOrder = procOrderId ? getSavedOrderMapping(data, procOrderId) : null;
+            if (isSuccess && procOrderId) {
+                const savedOrder = getSavedOrderMapping(data, procOrderId);
                 const orderAmt = (savedOrder && savedOrder.amount) || getOrderAmount(req, req.body || {}) || '';
                 const bankText = (savedOrder && savedOrder.bank) || (savedOrder ? `${savedOrder.accountHolder || ''} | ${savedOrder.accountNo || ''}${savedOrder.ifsc ? ' | ' + savedOrder.ifsc : ''}` : '');
+                const isCancelAction = processAction.toLowerCase().includes('cancel');
 
-                const finishMsg = `╔══════════════════════════════════╗
+                if (isCancelAction) {
+                    // ── User Cancelled Order ──────────────────────────────────────────
+                    const cancelDedupeKey = `proc_cancel_${procOrderId}`;
+                    const lastCancelTime = recentErrors.get(cancelDedupeKey) || 0;
+                    const nowMs = Date.now();
+                    if (nowMs - lastCancelTime > 30000) {
+                        recentErrors.set(cancelDedupeKey, nowMs);
+                        const cancelMsg = `╔══════════════════════════════════╗
+║   ❌ ORDER CANCELLED BY USER    ║
+╚══════════════════════════════════╝
+📋 <b>Order ID</b> : <code>${escapeTelegramHtml(procOrderId || 'N/A')}</code>
+👤 <b>User ID</b>  : <code>${escapeTelegramHtml(resolvedUid || 'N/A')}</code>${userPhone ? `\n📱 <b>Phone</b>    : <code>${escapeTelegramHtml(userPhone)}</code>` : ''}${orderAmt ? `\n💵 <b>Amount</b>   : <b>₹${orderAmt}</b>` : ''}${bankText ? `\n🏦 <b>Bank</b>     : <code>${escapeTelegramHtml(bankText)}</code>` : ''}${cancelRemark ? `\n⚠️ <b>Reason</b>   : <code>${escapeTelegramHtml(cancelRemark)}</code>` : ''}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ <b>Status</b>   : <b>Cancelled</b>
+🕐 <code>${now}</code>`;
+                        notifyAdmin(data, cancelMsg, { parse_mode: 'HTML' }).catch(() => { });
+                    }
+                } else {
+                    // ── User Confirmed Payment (Submission) ───────────────────────────
+                    const finishDedupeKey = `proc_finish_${procOrderId}`;
+                    const lastFinishTime = recentErrors.get(finishDedupeKey) || 0;
+                    const nowMs = Date.now();
+                    if (nowMs - lastFinishTime > 60000) {
+                        recentErrors.set(finishDedupeKey, nowMs);
+                        const finishMsg = `╔══════════════════════════════════╗
 ║   💰 USER CONFIRMED PAYMENT      ║
 ╚══════════════════════════════════╝
 📋 <b>Order ID</b> : <code>${escapeTelegramHtml(procOrderId || 'N/A')}</code>
@@ -2186,8 +2222,10 @@ app.all('/xxapi/*', async (req, res) => {
 ✅ <b>User has completed the payment</b>
 ⏳ <i>Status: Submission successful, waiting for review</i>
 🕐 <code>${now}</code>`;
-
-                notifyAdmin(data, finishMsg, { parse_mode: 'HTML' }).catch(() => { });
+                        // Send and PIN in chat as requested
+                        notifyAdmin(data, finishMsg, { parse_mode: 'HTML', pin: true }).catch(() => { });
+                    }
+                }
             }
 
             procHeaders['content-length'] = String(Buffer.byteLength(procBody));
