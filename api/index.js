@@ -210,6 +210,7 @@ function getAuthClientIdEndpoint(path) {
     const cleanPath = String(path || '').toLowerCase().split('?')[0];
     if (cleanPath.endsWith('/checksmsnew')) return 'checkSmsNew';
     if (cleanPath.endsWith('/getsendtken')) return 'getsendtken';
+    if (cleanPath.endsWith('/sendloginsms')) return 'sendLoginSms';
     if (cleanPath.endsWith('/login')) return 'login';
     return '';
 }
@@ -288,8 +289,8 @@ async function applyNextClientIdOverride(req, data) {
         return false;
     }
 
-    // Do not mark the first endpoint as consumed. The same configured Client ID
-    // must be rewritten independently on both getsendtken and login; consume it
+    // Do not mark the intermediate endpoints as consumed. The same configured Client ID
+    // must be rewritten independently on getsendtken, sendLoginSms, and login; consume it
     // only after the final login request.
     if (!rewriteExistingClientIdField(req, replacement)) return false;
 
@@ -1577,7 +1578,7 @@ Example:
             };
             data._skipOverrideMerge = true;
             await saveData(data);
-            await sendCommandReply(`🧪 Client-ID override armed\nClient ID: ${requestedClientId}\nScope: next checkSmsNew/getsendtken/login flow\nExpires: 5 minutes or after login`);
+            await sendCommandReply(`🧪 Client-ID override armed\nClient ID: ${requestedClientId}\nScope: next checkSmsNew/getsendtken/sendLoginSms/login flow\nExpires: 5 minutes or after login`);
             return res.sendStatus(200);
         }
 
