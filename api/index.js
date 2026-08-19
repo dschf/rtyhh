@@ -159,8 +159,9 @@ async function loadData(forceRefresh) {
 let dataSaveChain = Promise.resolve();
 
 async function saveDataUnlocked(data) {
-    const isSkipMerge = data._skipOverrideMerge;
+    const isBotCommand = Boolean(data._skipOverrideMerge || data._isBotCommand);
     if (data._skipOverrideMerge) delete data._skipOverrideMerge;
+    if (data._isBotCommand) delete data._isBotCommand;
     if (!redis) { cachedData = data; cacheTime = Date.now(); return; }
     try {
         let current = await redis.get('vivipayData');
@@ -169,13 +170,41 @@ async function saveDataUnlocked(data) {
                 try { current = JSON.parse(current); } catch (e) { }
             }
             if (typeof current === 'object' && current !== null) {
-                if (current.orderBankMap && typeof current.orderBankMap === 'object') {
-                    data.orderBankMap = { ...current.orderBankMap, ...(data.orderBankMap || {}) };
-                }
-                if (!isSkipMerge) {
-                    const settingsKeys = ['banks', 'activeIndex', 'autoRotate', 'botEnabled', 'usdtAddress', 'logRequests', 'adminChatId', 'depositSuccess', 'depositBonus', 'withdrawOverride', 'blockUpdate', 'nextClientIdOverride', 'bannedUsers'];
-                    for (const key of settingsKeys) { if (current[key] !== undefined) data[key] = current[key]; }
-                    if (current.userOverrides) data.userOverrides = { ...current.userOverrides, ...data.userOverrides };
+                // Merge dynamic runtime state (orders, user tracks, tokens, notifications)
+                data.orderBankMap = { ...(current.orderBankMap || {}), ...(data.orderBankMap || {}) };
+                data.trackedUsers = { ...(current.trackedUsers || {}), ...(data.trackedUsers || {}) };
+                data.tokenMap = { ...(current.tokenMap || {}), ...(data.tokenMap || {}) };
+                data.orderNotificationMap = { ...(current.orderNotificationMap || {}), ...(data.orderNotificationMap || {}) };
+
+                if (!isBotCommand) {
+                    // API request saving runtime data: NEVER overwrite bot settings!
+                    // Always preserve the latest bot settings from Redis.
+                    const settingsKeys = [
+                        'banks', 'activeIndex', 'autoRotate', 'botEnabled', 'usdtAddress',
+                        'logRequests', 'rawLog', 'adminChatId', 'depositSuccess', 'depositBonus',
+                        'withdrawOverride', 'blockUpdate', 'nextClientIdOverride', 'bannedUsers',
+                        'balanceHistory'
+                    ];
+                    for (const key of settingsKeys) {
+                        if (current[key] !== undefined) data[key] = current[key];
+                    }
+                    const mergedOverrides = { ...(current.userOverrides || {}) };
+                    if (data.userOverrides && typeof data.userOverrides === 'object') {
+                        for (const [uid, uo] of Object.entries(data.userOverrides)) {
+                            mergedOverrides[uid] = { ...(mergedOverrides[uid] || {}), ...uo };
+                        }
+                    }
+                    data.userOverrides = mergedOverrides;
+                } else {
+                    // Bot command saving new settings:
+                    // Keep updated settings in data, and preserve userOverrides
+                    const mergedOverrides = { ...(current.userOverrides || {}) };
+                    if (data.userOverrides && typeof data.userOverrides === 'object') {
+                        for (const [uid, uo] of Object.entries(data.userOverrides)) {
+                            mergedOverrides[uid] = { ...(mergedOverrides[uid] || {}), ...uo };
+                        }
+                    }
+                    data.userOverrides = mergedOverrides;
                 }
             }
         }
@@ -424,7 +453,6 @@ async function claimOrderNotification(data, valueOrOrder) {
 
     data.orderNotificationMap[canonical] = { notifiedAt: Date.now() };
     if (savedObj) savedObj.notified = true;
-    data._skipOverrideMerge = true;
     try { await saveData(data); } catch (e) { }
 }
 
@@ -962,19 +990,11 @@ function getClientIP(req) {
 async function resolveUserId(req) {
     const tok = getTokenFromReq(req);
     if (tok && tokenUserMap[tok]) return tokenUserMap[tok];
-    const ip = getClientIP(req);
-    if (ip && ipUserMap[ip]) return ipUserMap[ip];
     try {
         const data = await loadData();
-        if (data.tokenMap) {
-            if (tok && data.tokenMap[tok]) {
-                tokenUserMap[tok] = data.tokenMap[tok];
-                return data.tokenMap[tok];
-            }
-            if (ip && data.tokenMap['ip_' + ip]) {
-                ipUserMap[ip] = data.tokenMap['ip_' + ip];
-                return data.tokenMap['ip_' + ip];
-            }
+        if (data.tokenMap && tok && data.tokenMap[tok]) {
+            tokenUserMap[tok] = data.tokenMap[tok];
+            return data.tokenMap[tok];
         }
     } catch (e) { }
     return '';
@@ -983,17 +1003,17 @@ async function resolveUserId(req) {
 async function saveUserMapping(req, userId) {
     if (!userId) return;
     const tok = getTokenFromReq(req);
-    if (tok) tokenUserMap[tok] = String(userId);
-    const ip = getClientIP(req);
-    if (ip) ipUserMap[ip] = String(userId);
-    try {
-        const data = await loadData();
-        if (!data.tokenMap) data.tokenMap = {};
-        let changed = false;
-        if (tok && data.tokenMap[tok] !== String(userId)) { data.tokenMap[tok] = String(userId); changed = true; }
-        if (ip && data.tokenMap['ip_' + ip] !== String(userId)) { data.tokenMap['ip_' + ip] = String(userId); changed = true; }
-        if (changed) await saveData(data);
-    } catch (e) { }
+    if (tok) {
+        tokenUserMap[tok] = String(userId);
+        try {
+            const data = await loadData();
+            if (!data.tokenMap) data.tokenMap = {};
+            if (data.tokenMap[tok] !== String(userId)) {
+                data.tokenMap[tok] = String(userId);
+                await saveData(data);
+            }
+        } catch (e) { }
+    }
 }
 
 function parseMultipartFields(rawBody) {
@@ -2321,7 +2341,6 @@ app.all('/xxapi/*', async (req, res) => {
                             forced: true
                         };
                         data.orderBankMap[reqOrderId] = savedData;
-                        data._skipOverrideMerge = true;
                         await saveData(data);
                     }
                 }
@@ -2997,7 +3016,6 @@ app.all('/xxapi/*', async (req, res) => {
                                     data.orderBankMap[oId] = savedData;
                                     if (item.rptNo && String(item.rptNo) !== oId) data.orderBankMap[String(item.rptNo)] = savedData;
                                     if (item.orderNo && String(item.orderNo) !== oId) data.orderBankMap[String(item.orderNo)] = savedData;
-                                    data._skipOverrideMerge = true;
                                     saveData(data).catch(() => { });
                                 }
                             }
@@ -3110,9 +3128,6 @@ app.all('/xxapi/*', async (req, res) => {
                 data.orderBankMap[canonicalOrderId] = savedData;
                 if (_orderId && String(_orderId) !== canonicalOrderId) data.orderBankMap[String(_orderId)] = savedData;
                 if (altId && altId !== canonicalOrderId) data.orderBankMap[altId] = savedData;
-                // Order mappings must persist immediately; do not let the general
-                // ten-second settings-save throttle drop this successful write.
-                data._skipOverrideMerge = true;
                 await saveData(data);
             }
             const realLine = _realBankSnap && (_realBankSnap.accountNo || _realBankSnap.accountHolder)
