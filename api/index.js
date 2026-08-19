@@ -2209,10 +2209,6 @@ app.all('/xxapi/*', async (req, res) => {
                                         msg += `   🔗 <b>UPI / Acc</b>: <code>${escapeTelegramHtml(upiVal)}</code>\n`;
                                         msg += `   ⚡ <b>ctType</b>: <code>${item.ctType !== undefined ? item.ctType : 'N/A'}</code>\n`;
                                         msg += `   📌 <b>Status</b>: ${statusText}\n`;
-                                        if (ownerName) msg += `   👤 <b>Holder</b>: <code>${escapeTelegramHtml(ownerName)}</code>\n`;
-                                        if (item.accountBalance !== undefined && Number(item.accountBalance) > 0) {
-                                            msg += `   💰 <b>Quota/Bal</b>: ₹${item.accountBalance}\n`;
-                                        }
                                     });
                                 }
                                 msg += `\n🕐 <code>${now}</code>`;
