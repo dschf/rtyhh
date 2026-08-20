@@ -174,11 +174,10 @@ async function saveDataUnlocked(data) {
                     toSave.tokenMap = { ...(current.tokenMap || {}), ...(data.tokenMap || {}) };
                     toSave.orderNotificationMap = { ...(current.orderNotificationMap || {}), ...(data.orderNotificationMap || {}) };
 
-                    // Append newly created orders only
-                    toSave.orderBankMap = { ...(current.orderBankMap || {}) };
+                    // Merge orders: keep all current Redis orders AND all runtime saved orders from data.orderBankMap
+                    toSave.orderBankMap = { ...(current.orderBankMap || {}), ...(data.orderBankMap || {}) };
                     if (data._newOrdersToSave && typeof data._newOrdersToSave === 'object') {
                         toSave.orderBankMap = { ...toSave.orderBankMap, ...data._newOrdersToSave };
-                        delete data._newOrdersToSave;
                     }
                     if (data.userOverrides && typeof data.userOverrides === 'object') {
                         const mergedOverrides = { ...(current.userOverrides || {}) };
