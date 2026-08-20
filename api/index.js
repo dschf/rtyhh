@@ -186,6 +186,9 @@ async function saveDataUnlocked(data) {
                         }
                         toSave.userOverrides = mergedOverrides;
                     }
+                    if (data.nextClientIdOverride !== undefined) {
+                        toSave.nextClientIdOverride = data.nextClientIdOverride;
+                    }
                     data = toSave;
                 } else {
                     // Bot command saving new settings / order mutations:
@@ -312,7 +315,6 @@ async function applyNextClientIdOverride(req, data) {
     const replacement = String(pending.value || '').trim();
     if (!replacement || !pending.expiresAt || Date.now() > Number(pending.expiresAt)) {
         data.nextClientIdOverride = null;
-        data._skipOverrideMerge = true;
         await saveData(data);
         return false;
     }
@@ -326,7 +328,6 @@ async function applyNextClientIdOverride(req, data) {
     // final login request, then it is consumed so it cannot affect later logins.
     if (endpoint === 'login') data.nextClientIdOverride = null;
     else data.nextClientIdOverride = pending;
-    data._skipOverrideMerge = true;
     await saveData(data);
     if (endpoint === 'login') {
         try {
