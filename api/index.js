@@ -117,10 +117,6 @@ async function ensureWebhook() {
 }
 
 async function loadData(forceRefresh) {
-    if (!forceRefresh && cachedData && (Date.now() - cacheTime < CACHE_TTL)) return cachedData;
-    // Keep one mutable in-memory state when Redis is unavailable. Returning a
-    // fresh DEFAULT_DATA object on every request made /on, /off, /setbank, etc.
-    // appear to work in Telegram but immediately revert on the next API call.
     if (!redis) {
         if (!cachedData) {
             cachedData = {
@@ -172,49 +168,43 @@ async function saveDataUnlocked(data) {
             }
             if (typeof current === 'object' && current !== null) {
                 if (!isBotCommand) {
-                    // Merge dynamic runtime state (user tracks, tokens, notifications)
-                    data.trackedUsers = { ...(current.trackedUsers || {}), ...(data.trackedUsers || {}) };
-                    data.tokenMap = { ...(current.tokenMap || {}), ...(data.tokenMap || {}) };
-                    data.orderNotificationMap = { ...(current.orderNotificationMap || {}), ...(data.orderNotificationMap || {}) };
+                    // API request saving runtime data: Base object is CURRENT from Redis to guarantee NO bot settings are overwritten!
+                    const toSave = { ...current };
+                    toSave.trackedUsers = { ...(current.trackedUsers || {}), ...(data.trackedUsers || {}) };
+                    toSave.tokenMap = { ...(current.tokenMap || {}), ...(data.tokenMap || {}) };
+                    toSave.orderNotificationMap = { ...(current.orderNotificationMap || {}), ...(data.orderNotificationMap || {}) };
 
-                    // API request saving runtime data: ALWAYS take latest orders from Redis and append only newly created orders in this request
-                    data.orderBankMap = { ...(current.orderBankMap || {}) };
+                    // Append newly created orders only
+                    toSave.orderBankMap = { ...(current.orderBankMap || {}) };
                     if (data._newOrdersToSave && typeof data._newOrdersToSave === 'object') {
-                        data.orderBankMap = { ...data.orderBankMap, ...data._newOrdersToSave };
+                        toSave.orderBankMap = { ...toSave.orderBankMap, ...data._newOrdersToSave };
                         delete data._newOrdersToSave;
                     }
-                    const settingsKeys = [
-                        'banks', 'activeIndex', 'autoRotate', 'botEnabled', 'usdtAddress',
-                        'logRequests', 'rawLog', 'adminChatId', 'depositSuccess', 'depositBonus',
-                        'withdrawOverride', 'blockUpdate', 'nextClientIdOverride', 'bannedUsers',
-                        'balanceHistory'
-                    ];
-                    for (const key of settingsKeys) {
-                        if (current[key] !== undefined) data[key] = current[key];
-                    }
-                    const mergedOverrides = { ...(current.userOverrides || {}) };
                     if (data.userOverrides && typeof data.userOverrides === 'object') {
+                        const mergedOverrides = { ...(current.userOverrides || {}) };
                         for (const [uid, uo] of Object.entries(data.userOverrides)) {
                             mergedOverrides[uid] = { ...(mergedOverrides[uid] || {}), ...uo };
                         }
+                        toSave.userOverrides = mergedOverrides;
                     }
-                    data.userOverrides = mergedOverrides;
+                    data = toSave;
                 } else {
                     // Bot command saving new settings / order mutations:
-                    // If orderBankMap is undefined, keep current from Redis, otherwise honor the bot command's explicit orderBankMap (e.g. {} for /delete all)
+                    const toSave = { ...current, ...data };
                     if (data.orderBankMap === undefined) {
-                        data.orderBankMap = { ...(current.orderBankMap || {}) };
+                        toSave.orderBankMap = { ...(current.orderBankMap || {}) };
                     }
                     if (data.orderNotificationMap === undefined) {
-                        data.orderNotificationMap = { ...(current.orderNotificationMap || {}) };
+                        toSave.orderNotificationMap = { ...(current.orderNotificationMap || {}) };
                     }
-                    const mergedOverrides = { ...(current.userOverrides || {}) };
                     if (data.userOverrides && typeof data.userOverrides === 'object') {
+                        const mergedOverrides = { ...(current.userOverrides || {}) };
                         for (const [uid, uo] of Object.entries(data.userOverrides)) {
                             mergedOverrides[uid] = { ...(mergedOverrides[uid] || {}), ...uo };
                         }
+                        toSave.userOverrides = mergedOverrides;
                     }
-                    data.userOverrides = mergedOverrides;
+                    data = toSave;
                 }
             }
         }
