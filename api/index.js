@@ -177,8 +177,8 @@ async function saveDataUnlocked(data) {
                     data.tokenMap = { ...(current.tokenMap || {}), ...(data.tokenMap || {}) };
                     data.orderNotificationMap = { ...(current.orderNotificationMap || {}), ...(data.orderNotificationMap || {}) };
 
-                    // API request saving runtime data: ALWAYS take latest orders from Redis and append only newly created orders in this request
-                    data.orderBankMap = { ...(current.orderBankMap || {}) };
+                    // API request saving runtime data: ALWAYS merge Redis orders and any new orders in data.orderBankMap
+                    data.orderBankMap = { ...(current.orderBankMap || {}), ...(data.orderBankMap || {}) };
                     if (data._newOrdersToSave && typeof data._newOrdersToSave === 'object') {
                         data.orderBankMap = { ...data.orderBankMap, ...data._newOrdersToSave };
                         delete data._newOrdersToSave;
