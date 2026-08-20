@@ -3099,6 +3099,10 @@ app.all('/xxapi/*', async (req, res) => {
                             getSavedOrderMapping(data, item) ||
                             (oId ? getSavedOrderMapping(data, oId) : null);
 
+                        const rawState = item.orderState ?? item.order_state ?? item.orderStatus ?? item.order_status ?? item.payer_status ?? item.payerStatus ?? item.state ?? item.status;
+                        const orderState = rawState !== undefined && rawState !== null ? parseInt(rawState) : -1;
+                        const isCancelUrl = urlLower.includes('currency=inr_cancel') || urlLower.includes('currency%3dinr_cancel') || urlLower.includes('/cancel');
+
                         const iAmt = parseFloat(item.amount || item.realAmount || item.orderAmount || item.money || 0);
                         const itemUid = String(item.uid || item.userId || userId || '');
                         const itemBank = getActiveBank(data, itemUid);
@@ -3123,8 +3127,9 @@ app.all('/xxapi/*', async (req, res) => {
                                     if (mappedWallet) item.walletDomain = mappedWallet;
                                 }
                             }
-                        } else if (urlLower.includes('history')) {
-                            if (rptNo) {
+                        } else if (urlLower.includes('history') && !isCancelUrl) {
+                            // ONLY replace when orderState is 1 (Paying / In-Progress)
+                            if (orderState === 1 && rptNo) {
                                 const oldAcctNo = item.acctNo || item.account || item.accountNo || '';
                                 const oldAcctCode = item.acctCode || item.ifsc || '';
                                 const oldAcctName = item.acctName || item.accountHolder || item.name || '';
