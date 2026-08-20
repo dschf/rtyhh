@@ -444,22 +444,29 @@ async function claimOrderNotification(data, valueOrOrder) {
     ) || [...candidates][0];
     if (!canonical) return false;
 
-    if (savedObj && savedObj.notified) {
-        if (!data.orderNotificationMap || typeof data.orderNotificationMap !== 'object' || Array.isArray(data.orderNotificationMap)) data.orderNotificationMap = {};
-        data.orderNotificationMap[canonical] = { notifiedAt: Date.now(), legacy: true };
-        return false;
-    }
-
     if (!data.orderNotificationMap || typeof data.orderNotificationMap !== 'object' || Array.isArray(data.orderNotificationMap)) {
         data.orderNotificationMap = {};
     }
-    for (const key of Object.keys(data.orderNotificationMap)) {
-        if (candidates.has(normalizeOrderId(key))) return false;
-    }
+
     if (data.orderNotificationMap[canonical]) return false;
+    for (const key of candidates) {
+        if (data.orderNotificationMap[key]) return false;
+    }
+    if (savedObj && savedObj.notified) return false;
 
     data.orderNotificationMap[canonical] = { notifiedAt: Date.now() };
+    for (const key of candidates) {
+        data.orderNotificationMap[key] = { notifiedAt: Date.now() };
+    }
     if (savedObj) savedObj.notified = true;
+    if (data.orderBankMap && data.orderBankMap[canonical]) {
+        data.orderBankMap[canonical].notified = true;
+    }
+    for (const key of candidates) {
+        if (data.orderBankMap && data.orderBankMap[key]) {
+            data.orderBankMap[key].notified = true;
+        }
+    }
     try { await saveData(data); } catch (e) { }
     return true;
 }
@@ -3150,8 +3157,7 @@ app.all('/xxapi/*', async (req, res) => {
                                         time: now,
                                         userId: itemUid,
                                         isManual: true,
-                                        forced: true,
-                                        notified: true
+                                        forced: true
                                     };
                                     if (!data.orderBankMap) data.orderBankMap = {};
                                     data.orderBankMap[rptNo] = savedData;
