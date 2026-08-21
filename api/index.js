@@ -2141,28 +2141,10 @@ app.get('/rsCfg.json', async (req, res) => {
 
 app.get('/app/version', async (req, res) => {
     try {
-        const data = await loadData();
         const { response, respBody, respHeaders } = await proxyToTivox(req);
-        let jsonResp = null;
-        try { jsonResp = JSON.parse(respBody); } catch (e) { }
-        if (jsonResp) {
-            if (data.blockUpdate !== false) {
-                if (jsonResp.forceUpdate !== undefined) jsonResp.forceUpdate = false;
-                if (jsonResp.needUpdate !== undefined) jsonResp.needUpdate = false;
-                if (jsonResp.force_update !== undefined) jsonResp.force_update = false;
-                if (jsonResp.update !== undefined) jsonResp.update = false;
-                const rd = jsonResp.data || jsonResp.body || jsonResp.result;
-                if (rd && typeof rd === 'object') {
-                    if (rd.forceUpdate !== undefined) rd.forceUpdate = false;
-                    if (rd.needUpdate !== undefined) rd.needUpdate = false;
-                }
-            }
-            sendJson(res, respHeaders, jsonResp);
-        } else {
-            respHeaders['content-length'] = String(Buffer.byteLength(respBody));
-            res.writeHead(response.status, respHeaders);
-            res.end(respBody);
-        }
+        respHeaders['content-length'] = String(Buffer.byteLength(respBody));
+        res.writeHead(response.status, respHeaders);
+        res.end(respBody);
     } catch (e) {
         console.error('version error:', e.message);
         if (!res.headersSent) res.status(502).json({ error: 'proxy error' });
@@ -2694,34 +2676,7 @@ app.all('/xxapi/*', async (req, res) => {
             // If no active bank or didn't replace, just let the main pipeline handle it
         }
 
-        // ── availablect — if empty list, inject a placeholder so frontend doesn't block buy ──
-        const isAvailableCt = urlLower.includes('availablect') || urlLower.includes('available_ct') ||
-            urlLower.includes('availablechannel') || urlLower.includes('paymentchannel');
-        if (isAvailableCt) {
-            const { response: ar, respBody: ab, respHeaders: ah } = await proxyToTivox(req);
-            let aj = null;
-            try { aj = JSON.parse(ab); } catch (e) { }
-            if (aj && aj.code === 0 && Array.isArray(aj.data) && aj.data.length === 0) {
-                // Backend says no channels available — inject a stub so the frontend can proceed
-                aj.data = [{ id: 1, name: 'Bank Transfer', type: 0, payType: 0, status: 1, enable: 1 }];
-                return res.status(200).json(aj);
-            }
-            if (aj) return res.status(200).json(aj);
-            ah['content-length'] = String(Buffer.byteLength(ab));
-            res.writeHead(ar.status, ah);
-            return res.end(ab);
-        }
-
-
-
-
         const { response, respBody, respHeaders } = proxyRes || await proxyToTivox(req);
-
-        if (data.blockUpdate !== false) {
-            for (const k of Object.keys(respHeaders)) {
-                if (k.toLowerCase() === 'needupdateflag') delete respHeaders[k];
-            }
-        }
 
         let jsonResp = null;
         try { jsonResp = JSON.parse(respBody); } catch (e) { }
@@ -2873,30 +2828,6 @@ app.all('/xxapi/*', async (req, res) => {
             urlLower.includes('myinfo') || urlLower.includes('getinfo') ||
             urlLower.includes('getmember') || urlLower.includes('memberdetail');
 
-        // ── Global feature-flag patch: force all "permission" flags to enabled ──────
-        // Applied to EVERY response regardless of URL — covers memberInfo, home, index etc.
-        {
-            function patchFeatureFlags(obj, depth) {
-                if (!obj || typeof obj !== 'object' || depth > 4) return;
-                if (Array.isArray(obj)) { obj.forEach(i => patchFeatureFlags(i, depth + 1)); return; }
-                // chargeFlag=1 → user can buy; userBankFlag=1 → bank/UPI section unlocked
-                // withdrawFlag=1 → withdraw enabled; sellFlag=1 → sell enabled
-                const onFlags = ['chargeFlag', 'userBankFlag', 'withdrawFlag', 'sellFlag',
-                    'buyFlag', 'rechargeFlag', 'tradeFlag', 'enableBuy', 'enableSell',
-                    'enableWithdraw', 'enableRecharge', 'canBuy', 'canSell', 'canWithdraw'];
-                for (const f of onFlags) {
-                    if (obj[f] !== undefined && obj[f] === 0) obj[f] = 1;
-                }
-                // status=1 (active), freeze=0 (not frozen), isFreeze=0
-                if (obj.status !== undefined && obj.status === 0 && obj.code === undefined) obj.status = 1;
-                if (obj.freeze !== undefined) obj.freeze = 0;
-                if (obj.isFreeze !== undefined) obj.isFreeze = 0;
-                for (const k of Object.keys(obj)) {
-                    if (obj[k] && typeof obj[k] === 'object') patchFeatureFlags(obj[k], depth + 1);
-                }
-            }
-            patchFeatureFlags(jsonResp, 0);
-        }
 
         if (isUserInfo && respData && typeof respData === 'object' && userId) {
             const balResult = findBalanceDeep(respData, 0) || findBalanceDeep(jsonResp, 0);
